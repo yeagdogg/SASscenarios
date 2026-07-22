@@ -1746,7 +1746,9 @@ quit;
 /* source must be unique by keys. NOTE: no CATX here - PROC SQL, unlike
    the data step, refuses CAT-family functions on numeric arguments, so
    a numeric key would silently break the check. A DISTINCT subquery is
-   type-agnostic.                                                       */
+   type-agnostic. The NOTE tracing brackets the check so a silent macro
+   death here is visible in the captured validate.log.                  */
+%put NOTE: [SQF] uniqueness check begins: source &srcds keys &keys;
 %let _kcat = %sysfunc(translate(%sysfunc(compbl(&keys)), %str(,), %str( )));
 %let _cnt = 0; %let _cntd = 0;
 proc sql noprint;
@@ -1754,6 +1756,7 @@ proc sql noprint;
     select count(*) into :_cntd trimmed
         from (select distinct &_kcat from &srcds);
 quit;
+%put NOTE: [SQF] uniqueness check counts: rows=&_cnt distinct=&_cntd;
 %if &_cnt ne &_cntd %then %do;
     %let SQF_VMSG = UPDATE_FROM source (&srcds) is not unique by KEY_VARS &keys: %eval(&_cnt - &_cntd) duplicate key rows. Deduplicate it or add key columns.;
     %sqf_verr(sev=E, scen=&scen, step=&step, field=SOURCE)
@@ -2362,6 +2365,12 @@ data _null_;
     /* ========================== UPDATE_FROM =========================== */
     else if method = 'UPDATE_FROM' then do;
         link upd_lists;
+        /* in DRY RUNS the hash loads the REAL source (a pure read that
+           happens before anything is staged): duplicate:'e' then
+           rejects duplicate source keys at validation time             */
+        length _hsrc $80;
+        if &dryrun = 1 and src_kind ne 'PREV' then _hsrc = _schsrc;
+        else _hsrc = _src;
         _l = 'data ' || strip(_to) || '(drop=_sqf_rc _sqf_aff' || trimn(_drops)
              || ') work._sqf_cnt(keep=_sqf_aff);'; link pl;
         /* declare the TARGET first so shared columns keep the target
@@ -2370,7 +2379,7 @@ data _null_;
         _l = '    if 0 then set ' || strip(_src) || '(keep=' || strip(_klist) || ' '
              || strip(_dlist) || ');'; link pl;
         _l = '    if _n_ = 1 then do;'; link pl;
-        _l = '        declare hash _sqf_h(dataset:"' || strip(_src) || '(keep='
+        _l = '        declare hash _sqf_h(dataset:"' || strip(_hsrc) || '(keep='
              || strip(_klist) || ' ' || strip(_dlist) || ')", duplicate:' || "'e');"; link pl;
         _l = '        _sqf_h.definekey(' || strip(_qk) || ');'; link pl;
         _l = '        _sqf_h.definedata(' || strip(_qd) || ');'; link pl;
