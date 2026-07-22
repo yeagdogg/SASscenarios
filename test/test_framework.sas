@@ -988,6 +988,7 @@ run;
 data _null_;
     file "&TROOT/csv/scenarios.csv" lrecl=500;
     put 'EFBBBF'x 'scenario_id,description,parent_scenario,active,notes';
+    put '# comment rows (first cell starts with #) must be skipped by the loader,,,,';
     put 'CSVAGE,"ages, in the east and west",,Y,"note with ""quotes"""';
 run;
 data _null_;

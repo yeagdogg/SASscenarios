@@ -68,7 +68,13 @@ Parent steps run before child steps.
 Named values referenced as `&NAME` in any `where_clause` / `assignments` /
 `source` cell. Blank `scenario_id` = global; a row with a `scenario_id`
 overrides the global for that scenario (and its children). Built-ins:
-`&ITER`, `&RUN_ID`, `&SCENARIO_ID`.
+`&ITER`, `&RUN_ID`, `&SCENARIO_ID`. **The sheet may be left empty**
+(headers only) — parameters are optional.
+
+### Comment rows
+On any sheet, a row whose **first cell starts with `#`** is ignored by the
+loader — use them to annotate blocks of scenarios or steps. The template's
+gray row-2 notes are comment rows. (Fully blank rows are ignored too.)
 
 **Substitution is literal and happens before any code runs.** The generated
 `gen/apply.sas` contains the actual values — open it and you see exactly what

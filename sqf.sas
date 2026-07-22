@@ -490,6 +490,7 @@ data &ds;
     end;
     drop _sqf_i;
 %if &sheet = SCENARIOS %then %do;
+    if left(scenario_id) =: '#' then delete;          /* comment rows */
     if missing(scenario_id) then delete;              /* ghost rows */
     scenario_id     = upcase(scenario_id);
     parent_scenario = upcase(parent_scenario);
@@ -497,6 +498,7 @@ data &ds;
     if active = ' ' then active = 'Y';
 %end;
 %else %if &sheet = STEPS %then %do;
+    if left(scenario_id) =: '#' then delete;          /* comment rows */
     if missing(scenario_id) and missing(method) and missing(target_table)
        and missing(step_no) then delete;              /* ghost rows */
     scenario_id  = upcase(scenario_id);
@@ -513,6 +515,7 @@ data &ds;
         then source = upcase(source);
 %end;
 %else %do;
+    if left(name) =: '#' then delete;                 /* comment rows */
     if missing(name) then delete;                     /* ghost rows */
     name        = upcase(name);
     scenario_id = upcase(scenario_id);
