@@ -1,0 +1,4 @@
+scenario_id,description,parent_scenario,active,notes
+BASELINE,Untouched inputs - reference run,,Y,
+RATEUP,Rate change scaled by &RATE_BUMP,,Y,uses PARAMETERS
+RATEUP_AGED,Rate up AND everyone one year older,RATEUP,Y,inherits RATEUP steps

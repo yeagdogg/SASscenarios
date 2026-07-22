@@ -1,0 +1,4 @@
+scenario_id,step_no,active,method,target_table,where_clause,key_vars,source,assignments,options,notes
+RATEUP,10,Y,SET_VALUES,RATES,,,,"rate_change = rate_change * &RATE_BUMP.;",,bump every rate
+RATEUP_AGED,10,Y,SET_VALUES,POLICIES,"status = 'ACT'",,,"policy_age = policy_age + 1;",,age active policies
+RATEUP_AGED,20,Y,FILTER_ROWS,POLICIES,"status ne 'LAP'",,,,,drop lapsed policies - see USER_GUIDE for RUN:/PREV: feed-forward sources
