@@ -71,11 +71,14 @@
    Forward slashes are valid on Windows SAS, Unix SAS, and UNC paths.      */
 %macro sqf_norm_path(p);
 %local _p;
-%let _p = %sysfunc(translate(%superq(p), /, \));
-%if %length(&_p) > 1 %then %do;
-    /* both operands quoted: a bare / in an %IF is the DIVISION operator */
-    %if "%qsubstr(&_p, %length(&_p), 1)" = "/" %then
-        %let _p = %qsubstr(&_p, 1, %eval(%length(&_p)-1));
+%let _p = %superq(p);
+%if %length(&_p) > 0 %then %do;   /* blank in -> blank out, no fn calls */
+    %let _p = %sysfunc(translate(&_p, /, \));
+    %if %length(&_p) > 1 %then %do;
+        /* both operands quoted: a bare / in an %IF is the DIVISION operator */
+        %if "%qsubstr(&_p, %length(&_p), 1)" = "/" %then
+            %let _p = %qsubstr(&_p, 1, %eval(%length(&_p)-1));
+    %end;
 %end;
 &_p.
 %mend sqf_norm_path;
@@ -86,6 +89,11 @@
 %local _p _n _i _seg _cur _unc _parent _pl;
 %let SQF_RC = 0;
 %let _p = %sqf_norm_path(&path);
+%if %length(&_p) = 0 %then %do;
+    %put ERROR: [SQF] sqf_mkdir called with a blank path.;
+    %let SQF_RC = 1;
+    %return;
+%end;
 %if %sysfunc(fileexist(&_p)) %then %return;
 %let _unc = 0;
 %if %length(&_p) > 2 %then %if "%qsubstr(&_p, 1, 2)" = "//" %then %let _unc = 1;
@@ -517,6 +525,11 @@ run;
 %local _ok _f;
 %let _ok = 0;
 %let _f  = %sqf_norm_path(&file);
+%if %length(&_f) = 0 %then %do;
+    %let SQF_VMSG = No workbook path given (control=).;
+    %sqf_verr(sev=E, scen=, field=&sheet)
+    %return;
+%end;
 %if not %sysfunc(fileexist(&_f)) %then %do;
     %let SQF_VMSG = Workbook not found: &_f (path must be visible to the SAS SERVER, not just your PC).;
     %sqf_verr(sev=E, scen=, field=&sheet)
@@ -556,6 +569,11 @@ libname _sqfxl xlsx "&_f";
 %let _f = %sqf_norm_path(&file);
 %let _sqf_csvbad = 0;
 %let _sqf_hcount = 0;
+%if %length(&_f) = 0 %then %do;
+    %let SQF_VMSG = No CSV path given (control= must be the folder holding the three CSV files).;
+    %sqf_verr(sev=E, scen=, field=&sheet)
+    %return;
+%end;
 %if not %sysfunc(fileexist(&_f)) %then %do;
     %let SQF_VMSG = CSV file not found: &_f;
     %sqf_verr(sev=E, scen=, field=&sheet)
@@ -1628,7 +1646,7 @@ run;
                 %let _k = %eval(&_k + 1);
             %end;
             %if &_m_method = REPLACE_TABLE or &_m_method = UPDATE_FROM %then %do;
-                %if %sysfunc(countw(&_tvl)) > 900 %then %do;
+                %if %length(&_tvl) > 0 %then %if %sysfunc(countw(&_tvl)) > 900 %then %do;
                     %let SQF_VMSG = &_m_target has more than 900 columns%str(;) generated column lists for &_m_method could truncate. Use CUSTOM_CODE for this table.;
                     %sqf_verr(sev=E, scen=&_m_origin, step=&_m_stepno, field=TARGET_TABLE)
                 %end;
@@ -2592,9 +2610,13 @@ options obs=max replace nosyntaxcheck;
 %macro sqf_clear_srclibs();
 %local _i _lr;
 %if %symexist(SQF_SRCLIBS) %then %do;
-    %do _i = 1 %to %sysfunc(countw(&SQF_SRCLIBS));
-        %let _lr = %scan(&SQF_SRCLIBS, &_i);
-        libname &_lr clear;
+    /* countw of an EMPTY value would collapse to countw() = zero
+       arguments and error out - guard the common no-sources case      */
+    %if %length(&SQF_SRCLIBS) > 0 %then %do;
+        %do _i = 1 %to %sysfunc(countw(&SQF_SRCLIBS));
+            %let _lr = %scan(&SQF_SRCLIBS, &_i);
+            libname &_lr clear;
+        %end;
     %end;
     %let SQF_SRCLIBS = ;
 %end;
@@ -3147,6 +3169,10 @@ libname _sqau clear;
 %if %length(&root) = 0 %then %let root = &SQF_ROOT;
 %let _d1 = %sqf_norm_path(&run1);
 %let _d2 = %sqf_norm_path(&run2);
+%if %length(&_d1) = 0 or %length(&_d2) = 0 %then %do;
+    %put ERROR: [SQF] compare_runs needs run1= and run2= (run folders or run ids).;
+    %return;
+%end;
 %if %sysfunc(libref(SQFREG)) ne 0 and %length(&root) > 0 %then %do;
     %sqf_registry_init(root=&root)
 %end;
@@ -3162,8 +3188,15 @@ libname _sqau clear;
         where upcase(run_id) = "%upcase(&run2)" order by event_dt desc;
     quit;
 %end;
-%if %length(&_d1) = 0 or %length(&_d2) = 0
-    or not %sysfunc(fileexist(&_d1)) or not %sysfunc(fileexist(&_d2)) %then %do;
+/* nested existence checks: macro %IF does not short-circuit and
+   fileexist() with a blank argument is itself an error                */
+%local _ok;
+%let _ok = 1;
+%if %length(&_d1) = 0 %then %let _ok = 0;
+%else %if not %sysfunc(fileexist(&_d1)) %then %let _ok = 0;
+%if %length(&_d2) = 0 %then %let _ok = 0;
+%else %if not %sysfunc(fileexist(&_d2)) %then %let _ok = 0;
+%if &_ok = 0 %then %do;
     %put ERROR: [SQF] compare_runs could not resolve both runs (&run1 / &run2).;
     %return;
 %end;
@@ -3336,9 +3369,17 @@ libname SQFBASE "&base" access=readonly;
     %let SQF_VMSG = Base folder cannot be assigned read-only: &base (as seen by the SAS server).;
     %sqf_verr(sev=E, scen=&SQF_SCEN_R, field=BASE)
 %end;
-%if &SQF_MODE_R = FULL and not %sysfunc(fileexist(&SQF_RI_MAIN)) %then %do;
-    %let SQF_VMSG = Main program not found: &SQF_RI_MAIN (pass main= or run mode=APPLYONLY).;
-    %sqf_verr(sev=E, scen=&SQF_SCEN_R, field=MAIN)
+%if &SQF_MODE_R = FULL %then %do;
+    /* nested checks: macro %IF does not short-circuit, and fileexist()
+       with a blank argument is itself an error                         */
+    %if %length(&SQF_RI_MAIN) = 0 %then %do;
+        %let SQF_VMSG = mode=FULL needs main= (path to your main program) - or run mode=APPLYONLY.;
+        %sqf_verr(sev=E, scen=&SQF_SCEN_R, field=MAIN)
+    %end;
+    %else %if not %sysfunc(fileexist(&SQF_RI_MAIN)) %then %do;
+        %let SQF_VMSG = Main program not found: &SQF_RI_MAIN (pass main= or run mode=APPLYONLY).;
+        %sqf_verr(sev=E, scen=&SQF_SCEN_R, field=MAIN)
+    %end;
 %end;
 %if not %sysfunc(indexw(FULL APPLYONLY VALIDATE, &SQF_MODE_R)) %then %do;
     %let SQF_VMSG = mode must be FULL, APPLYONLY or VALIDATE (got &SQF_MODE_R).;
@@ -3744,6 +3785,10 @@ quit;
 %local _m;
 %let _m = %sqf_norm_path(&main);
 %if %length(&_m) = 0 %then %let _m = &SQF_MAIN;
+%if %length(&_m) = 0 %then %do;
+    %put ERROR: [SQF] scan_program: pass main= (or set it once with sqf_setup).;
+    %return;
+%end;
 %if not %sysfunc(fileexist(&_m)) %then %do;
     %put ERROR: [SQF] scan_program: file not found: &_m;
     %return;
