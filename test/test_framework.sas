@@ -386,6 +386,7 @@ run;
 %staged_count(mvar=TSTG)
 %assert_true(flag=%eval(&TSTG = 1), id=T02c, desc=only the modified table is staged [got &TSTG])
 %assert_true(flag=%sysfunc(fileexist(&TLASTDIR/audit/report.html)), id=T02d, desc=report.html exists)
+%let TAFF = -1;
 proc sql noprint;
     select coalesce(sum(aff), -1) into :TAFF trimmed
     from TAUD.audit_steps where step = 10;
@@ -597,6 +598,7 @@ data work.exp_rf;
     else if region = 'W' and rate_year = 2025 then rate_change = 2.6;
 run;
 %assert_ds_equal(a=work.exp_rf, b=TIN.rates, id=T07b, desc=matched rows updated - unmatched and order intact)
+%let TAFF7 = -1;
 proc sql noprint;
     select coalesce(sum(aff), -1) into :TAFF7 trimmed
     from TAUD.audit_steps where step = 10;
@@ -763,6 +765,7 @@ run;
                  desc=chained balance equals 3-step compounding, idvars=pol_id)
 libname TC3 clear;
 libname TCM "&TCHDIR" access=readonly;
+%let TCH = -1;
 proc sql noprint;
     select coalesce(sum(status = 'COMPLETED'), -1) into :TCH trimmed
     from TCM.chain_manifest;
@@ -770,6 +773,7 @@ quit;
 %assert_true(flag=%eval(&TCH = 3), id=T11c, desc=manifest shows 3 completed iterations [got &TCH])
 libname TCM clear;
 libname TA1 "&TCHDIR/iter_01/audit" access=readonly;
+%let TSK = -1;
 proc sql noprint;
     /* note: the =: truncation operator is not valid in PROC SQL */
     select coalesce(sum(substr(status, 1, 4) = 'SKIP'), -1) into :TSK trimmed
@@ -1077,6 +1081,8 @@ run;
   T20  compare_runs digest (baseline vs rate-up)
 ==================================================================*/
 %compare_runs(run1=&TRUNDIR_T01, run2=&TRUNDIR_T04, out=work.crout, html=N)
+%let T20A = 0;
+%let T20B = 0;
 proc sql noprint;
     select coalesce(sum(table = 'OUT_SUMMARY'    and note like 'DIFFERS%'), 0),
            coalesce(sum(table = 'OUT_POLICY_SUM' and note = 'identical'), 0)
