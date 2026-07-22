@@ -24,16 +24,29 @@ data _null_;
     rc = filename('_pb');
 run;
 
-/* fresh findings store, then the loader - UNCAPTURED */
+/* the raw file exactly as SAS reads it (first line hex-dumped: BOM etc) */
+data _null_;
+    infile "&TROOT/csv/scenarios.csv" lrecl=32767 truncover;
+    input;
+    if _n_ = 1 then put 'PROBE-HEX1: ' _infile_ $hex64.;
+    put 'PROBE-RAW' _n_ ': ' _infile_;
+    if _n_ >= 3 then stop;
+run;
+
+/* fresh findings store, then the loader - UNCAPTURED, BOTH branches */
 data work._sqf_verrors;
     length sev $1 scenario $32 step 8 field $32 message $500;
     call missing(of _all_);
     stop;
 run;
 
-%put PROBE: ---- calling sqf_load_control (CSV mode, no log redirection) ----;
+%put PROBE: ---- calling sqf_load_control (control_type=CSV, no log redirection) ----;
 %sqf_load_control(control=&TROOT/csv, control_type=CSV)
-%put PROBE: ---- sqf_load_control returned ----;
+%put PROBE: ---- returned from control_type=CSV call ----;
+
+%put PROBE: ---- calling sqf_load_control (control_type=AUTO, the suite route) ----;
+%sqf_load_control(control=&TROOT/csv, control_type=AUTO)
+%put PROBE: ---- returned from control_type=AUTO call ----;
 
 %macro probe_print(ds);
 %if %sysfunc(exist(&ds)) %then %do;
