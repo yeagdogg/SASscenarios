@@ -73,7 +73,8 @@
 %local _p;
 %let _p = %sysfunc(translate(%superq(p), /, \));
 %if %length(&_p) > 1 %then %do;
-    %if %qsubstr(&_p, %length(&_p), 1) = / %then
+    /* both operands quoted: a bare / in an %IF is the DIVISION operator */
+    %if "%qsubstr(&_p, %length(&_p), 1)" = "/" %then
         %let _p = %qsubstr(&_p, 1, %eval(%length(&_p)-1));
 %end;
 &_p.
@@ -87,14 +88,14 @@
 %let _p = %sqf_norm_path(&path);
 %if %sysfunc(fileexist(&_p)) %then %return;
 %let _unc = 0;
-%if %length(&_p) > 2 %then %if %qsubstr(&_p, 1, 2) = // %then %let _unc = 1;
+%if %length(&_p) > 2 %then %if "%qsubstr(&_p, 1, 2)" = "//" %then %let _unc = 1;
 %let _n = %sysfunc(countw(&_p, /));
 %let _cur = ;
 %do _i = 1 %to &_n;
     %let _seg = %qscan(&_p, &_i, /);
     %if &_i = 1 %then %do;
         %if &_unc = 1 %then %let _cur = //&_seg;
-        %else %if %qsubstr(&_p, 1, 1) = / %then %let _cur = /&_seg;
+        %else %if "%qsubstr(&_p, 1, 1)" = "/" %then %let _cur = /&_seg;
         %else %let _cur = &_seg;
     %end;
     %else %let _cur = &_cur/&_seg;
@@ -1584,7 +1585,7 @@ run;
             /* CUSTOM_CODE snippet file */
             %let _pth = %sysfunc(translate(%superq(_m_srcpath_&_r), /, \));
             %if %length(&_pth) > 0 %then %do;
-                %if not (%qsubstr(&_pth, 1, 1) = / or %index(&_pth, :) = 2) %then
+                %if not ("%qsubstr(&_pth, 1, 1)" = "/" or %index(&_pth, :) = 2) %then
                     %let _pth = &root/custom/&_pth;
                 %if not %sysfunc(fileexist(&_pth)) %then %do;
                     %let SQF_VMSG = CUSTOM_CODE snippet not found: &_pth;
