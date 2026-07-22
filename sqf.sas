@@ -677,8 +677,11 @@ run;
 %if &_t = AUTO %then %do;
     %if %length(&_c) = 0 %then %let _t = DATASET;
     %else %do;
+        /* a folder path has no dot, so the "extension" resolves to the
+           WHOLE PATH - its slashes would be read as division operators
+           by an unquoted %IF comparison. Quote both operands.          */
         %let _ext = %upcase(%qscan(&_c, -1, .));
-        %if &_ext = XLSX or &_ext = XLSM %then %let _t = XLSX;
+        %if "&_ext" = "XLSX" or "&_ext" = "XLSM" %then %let _t = XLSX;
         %else %let _t = CSV;
     %end;
 %end;
