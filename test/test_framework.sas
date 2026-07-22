@@ -861,6 +861,11 @@ run;
 %assert_ds_equal(a=work.exp_r13, b=TIN.rates,    id=T13b, desc=parent step applied in child run)
 %assert_ds_equal(a=work.exp_p13, b=TIN.policies, id=T13c, desc=child step applied on top)
 %drop_run_libs()
+%put NOTE: [TEST] ================================================================;
+%put NOTE: [TEST] NEGATIVE TESTS BEGIN. Every ERROR from here to the END marker is;
+%put NOTE: [TEST] DELIBERATE: the suite feeds bad scenarios and asserts that the;
+%put NOTE: [TEST] framework rejects each one loudly. Red lines here = tests PASSING.;
+%put NOTE: [TEST] ================================================================;
 %run_scenario(scenario=CYCA, mode=APPLYONLY, html=N)
 %assert_status(expect=VALIDATION_FAILED, id=T13d, desc=inheritance cycle rejected)
 %assert_base_pristine(id=T13e)
@@ -1030,6 +1035,9 @@ run;
 %assert_true(flag=%eval(&SQF_FAIL_STEP = 10), id=T18b, desc=failing step identified [got &SQF_FAIL_STEP])
 %assert_true(flag=%sysfunc(fileexist(&SQF_LAST_RUN_DIR/logs/apply.log)), id=T18c,
              desc=apply log kept for post-mortem)
+%put NOTE: [TEST] ================================================================;
+%put NOTE: [TEST] NEGATIVE TESTS END. Errors above were expected rejections.;
+%put NOTE: [TEST] ================================================================;
 /* session survives: a good scenario still runs afterwards */
 %ctl_blank()
 data work.ctl_scenarios;
