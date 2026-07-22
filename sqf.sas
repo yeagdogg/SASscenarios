@@ -511,7 +511,8 @@ data &ds;
     /* sources with a recognized prefix are structural -> upcase them;
        anything else (CUSTOM_CODE snippet path) keeps its case          */
     if upcase(source) =: 'BASE:' or upcase(source) =: 'SCEN:' or
-       upcase(source) =: 'RUN:'  or upcase(source) =: 'PREV:'
+       upcase(source) =: 'RUN:'  or upcase(source) =: 'PREV:' or
+       upcase(source) =: 'WORK:'
         then source = upcase(source);
 %end;
 %else %do;
@@ -1159,6 +1160,10 @@ data work._sqf_steps_p(keep=scenario_id step_no active method target_table
             src_kind = 'PREV';
             src_member = upcase(strip(substr(_s, 6)));
         end;
+        else if upcase(_s) =: 'WORK:' then do;
+            src_kind = 'WORK';
+            src_member = upcase(strip(substr(_s, 6)));
+        end;
         else if upcase(_s) =: 'RUN:' then do;
             src_kind = 'RUN';
             _b = strip(substr(_s, 5));
@@ -1182,7 +1187,7 @@ data work._sqf_steps_p(keep=scenario_id step_no active method target_table
             src_kind = 'PATH';                 /* CUSTOM_CODE snippet */
             src_path = _s;
         end;
-        if src_kind in ('BASE','SCEN','PREV')
+        if src_kind in ('BASE','SCEN','PREV','WORK')
            and not prxmatch('/^[A-Za-z_][A-Za-z0-9_]{0,31}$/', strip(src_member)) then do;
             sev='E'; field='SOURCE';
             message=catx(' ', 'Source table name is not a valid SAS dataset name:', _s);
@@ -1604,6 +1609,13 @@ run;
                 %sqf_verr(sev=E, scen=&_m_origin, step=&_m_stepno, field=SOURCE)
             %end;
             /* member existence is checked per-iteration at run time */
+        %end;
+        %else %if &_m_srckind = WORK %then %do;
+            %if not %sysfunc(exist(work.&_m_srcmem)) %then %do;
+                %let SQF_VMSG = Source table &_m_srcmem not found in WORK. Create it in this session before the run. Note: WORK tables vanish at session end%str(;) the run keeps only the staged RESULT of this step.;
+                %sqf_verr(sev=E, scen=&_m_origin, step=&_m_stepno, field=SOURCE)
+            %end;
+            %else %let _sda = work.&_m_srcmem;
         %end;
         %else %if &_m_srckind = PATH %then %do;
             /* CUSTOM_CODE snippet file */
@@ -2111,6 +2123,18 @@ data _null_;
                          || '; set SQFS' || put(_px_ex, z2.) || '.' || strip(_px_sm)
                          || '(obs=0); run;'; link pl;
                 end;
+                /* WORK: sources -> sandbox from the session WORK table.
+                   Registry key is kind-decorated: a WORK table may share
+                   a base table's name without colliding                 */
+                if _px_act = 'Y' and _px_sk = 'WORK' then do;
+                    _rm_mem = 'W#' || substr(_px_sm, 1, 30); link regmem;
+                    if _stag{_rm_idx} = . then do;
+                        _stag{_rm_idx} = 0;
+                        _l = 'data work._sqvb' || put(_rm_idx, z3.) || '_'
+                             || strip(substr(_px_sm, 1, 19))
+                             || '; set work.' || strip(_px_sm) || '(obs=0); run;'; link pl;
+                    end;
+                end;
             end;
             /* reset staged flags for the main pass */
             do _pp = 1 to 200;
@@ -2213,6 +2237,14 @@ data _null_;
     else if src_kind = 'PREV' then do;
         _src = 'SQFPREV.' || strip(src_member);
         _schsrc = _src;
+    end;
+    else if src_kind = 'WORK' then do;
+        if &dryrun = 1 then do;
+            _rm_mem = 'W#' || substr(src_member, 1, 30); link regmem;
+            _src = 'work._sqvb' || put(_rm_idx, z3.) || '_' || strip(substr(src_member, 1, 19));
+        end;
+        else _src = 'work.' || strip(src_member);
+        _schsrc = 'work.' || strip(src_member);
     end;
 
     /* ---------- pre-capture for delta counting ---------- */

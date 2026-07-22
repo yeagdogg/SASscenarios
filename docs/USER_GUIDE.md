@@ -123,8 +123,16 @@ SCEN:TABLE                    this run's staged copy (requires an earlier step o
 RUN:SCENARIO.TABLE            latest COMPLETED run's OUTPUT table   <- feed-forward
 RUN:SCENARIO.TABLE@run_id     a pinned specific run
 PREV:TABLE                    previous iteration's output (chains only)
+WORK:TABLE                    an ad-hoc table you built in this SAS session
 my_snippet.sas                CUSTOM_CODE only; relative to <root>/custom/
 ```
+
+`WORK:` is handy for quick lookup/override tables cooked up in-session
+(e.g. a handful of corrected rates) feeding `UPDATE_FROM` / `APPEND_ROWS` /
+`REPLACE_TABLE`. Caveat: WORK vanishes when the session ends, so only the
+step's staged RESULT (kept in the run folder) is durable — for anything
+you'll rerun later, put the table in a permanent folder and reference it
+from base, or keep the values on the PARAMETERS sheet.
 
 `RUN:` is how you "use the output values from a previous run as inputs for the
 next": run BASELINE once, then have a scenario `REPLACE_TABLE` /

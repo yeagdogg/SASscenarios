@@ -1103,6 +1103,42 @@ quit;
 %assert_base_pristine(id=T20c)
 
 /*==================================================================
+  T21  WORK: ad-hoc source table
+==================================================================*/
+data work.adhoc_rates;
+    length region $1 rate_year 8 rate_new 8;
+    region = 'N'; rate_year = 2026; rate_new = 7.7; output;
+run;
+%ctl_blank()
+data work.ctl_scenarios;
+    length scenario_id $32 description $256 parent_scenario $32 active $1 notes $500;
+    call missing(of _all_);
+    scenario_id = 'WORKSRC'; active = 'Y'; output;
+run;
+data work.ctl_steps;
+    length scenario_id $32 step_no 8 active $1 method $16 target_table $32
+           where_clause $4000 key_vars $500 source $500 assignments $8000
+           options $200 notes $500;
+    call missing(of _all_);
+    scenario_id = 'WORKSRC'; step_no = 10; active = 'Y';
+    method = 'UPDATE_FROM'; target_table = 'RATES';
+    key_vars = 'REGION RATE_YEAR';
+    source = 'WORK:ADHOC_RATES';
+    assignments = 'rate_change=rate_new';
+    output;
+run;
+%run_scenario(scenario=WORKSRC, mode=APPLYONLY, html=N)
+%assert_status(expect=COMPLETED, id=T21a, desc=WORK: source scenario completes)
+%use_last_run()
+data work.exp_w21;
+    set TGOLD.rates;
+    if region = 'N' and rate_year = 2026 then rate_change = 7.7;
+run;
+%assert_ds_equal(a=work.exp_w21, b=TIN.rates, id=T21b, desc=ad-hoc WORK table drove the update)
+%drop_run_libs()
+%assert_base_pristine(id=T21c)
+
+/*==================================================================
   SUMMARY
 ==================================================================*/
 proc sql noprint;
