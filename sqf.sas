@@ -1743,13 +1743,16 @@ quit;
         %sqf_verr(sev=E, scen=&scen, step=&step, field=ASSIGNMENTS)
     %end;
 %end;
-/* source must be unique by keys */
+/* source must be unique by keys. NOTE: no CATX here - PROC SQL, unlike
+   the data step, refuses CAT-family functions on numeric arguments, so
+   a numeric key would silently break the check. A DISTINCT subquery is
+   type-agnostic.                                                       */
 %let _kcat = %sysfunc(translate(%sysfunc(compbl(&keys)), %str(,), %str( )));
 %let _cnt = 0; %let _cntd = 0;
 proc sql noprint;
-    select count(*), count(distinct catx('|', &_kcat))
-        into :_cnt trimmed, :_cntd trimmed
-        from &srcds;
+    select count(*) into :_cnt trimmed from &srcds;
+    select count(*) into :_cntd trimmed
+        from (select distinct &_kcat from &srcds);
 quit;
 %if &_cnt ne &_cntd %then %do;
     %let SQF_VMSG = UPDATE_FROM source (&srcds) is not unique by KEY_VARS &keys: %eval(&_cnt - &_cntd) duplicate key rows. Deduplicate it or add key columns.;
@@ -3295,7 +3298,7 @@ proc datasets lib=work nolist nowarn; delete _sqf_cboth; quit;
 /* ---------------- internal: prep ---------------- */
 %macro sqf_prep(scenario=, control=, control_type=, control_lib=, base=,
                 root=, main=, mode=, inlib=, outlib=, notes=, chain=0);
-%global SQF_PREP SQF_RUNID SQF_RUNDIR SQF_START_DT SQF_MODE_R SQF_SCEN_R
+%global SQF_PREP SQF_RUNID SQF_RUNROOT SQF_START_DT SQF_MODE_R SQF_SCEN_R
         SQF_INLIB_R SQF_OUTLIB_R SQF_CTLTYPE_R SQF_CTLLIB_R
         SQF_RI_CONTROL SQF_RI_BASE SQF_RI_MAIN SQF_RUN_NOTES SQF_NERR SQF_NWARN;
 %let SQF_PREP = FATAL;
@@ -3344,16 +3347,16 @@ proc datasets lib=work nolist nowarn; delete _sqf_cboth; quit;
 
 /* run identity + folders */
 %let SQF_RUNID  = %sqf_gen_runid();
-%let SQF_RUNDIR = &root/scenarios/&SQF_SCEN_R/runs/&SQF_RUNID;
-%if %sysfunc(fileexist(&SQF_RUNDIR)) %then %let SQF_RUNDIR = &SQF_RUNDIR._2;
-%sqf_mkdir(&SQF_RUNDIR/control_snapshot)
+%let SQF_RUNROOT = &root/scenarios/&SQF_SCEN_R/runs/&SQF_RUNID;
+%if %sysfunc(fileexist(&SQF_RUNROOT)) %then %let SQF_RUNROOT = &SQF_RUNROOT._2;
+%sqf_mkdir(&SQF_RUNROOT/control_snapshot)
 %if &SQF_RC ne 0 %then %do;
     %put ERROR: [SQF] run: cannot create the run folder under &root/scenarios/&SQF_SCEN_R/runs.;
     %return;
 %end;
-%if %length(&SQF_RUNDIR) > 200 %then
-    %put WARNING: [SQF] Run folder path is %length(&SQF_RUNDIR) characters long%str(;) consider a shorter root to stay clear of path-length limits.;
-%let SQF_LAST_RUN_DIR = &SQF_RUNDIR;
+%if %length(&SQF_RUNROOT) > 200 %then
+    %put WARNING: [SQF] Run folder path is %length(&SQF_RUNROOT) characters long%str(;) consider a shorter root to stay clear of path-length limits.;
+%let SQF_LAST_RUN_DIR = &SQF_RUNROOT;
 %sqf_registry_init(root=&root)
 
 /* findings store */
@@ -3403,15 +3406,15 @@ libname SQFBASE "&base" access=readonly;
 %end;
 
 /* load + flatten under the load log */
-%sqf_mkdir(&SQF_RUNDIR/logs)
-%sqf_printto(log=&SQF_RUNDIR/logs/load.log)
+%sqf_mkdir(&SQF_RUNROOT/logs)
+%sqf_printto(log=&SQF_RUNROOT/logs/load.log)
 %sqf_load_control(control=&control, control_type=&SQF_CTLTYPE_R, control_lib=&SQF_CTLLIB_R)
 %sqf_flatten(scenario=&SQF_SCEN_R)
 %sqf_printto_off()
 %let syscc = 0;   /* loader probes may have raised it; findings decide */
 
 /* control snapshot */
-libname _sqcs "&SQF_RUNDIR/control_snapshot";
+libname _sqcs "&SQF_RUNROOT/control_snapshot";
 %if %sysfunc(libref(_sqcs)) = 0 %then %do;
     proc copy in=work out=_sqcs memtype=data;
         select _sqf_scenarios _sqf_steps _sqf_parameters;
@@ -3419,12 +3422,12 @@ libname _sqcs "&SQF_RUNDIR/control_snapshot";
     libname _sqcs clear;
 %end;
 %if &SQF_CONTROL_TYPE = XLSX %then %do;
-    %sqf_copy_file(from=&control, to=&SQF_RUNDIR/control_snapshot/workbook.xlsx)
+    %sqf_copy_file(from=&control, to=&SQF_RUNROOT/control_snapshot/workbook.xlsx)
 %end;
 %else %if &SQF_CONTROL_TYPE = CSV %then %do;
-    %sqf_copy_file(from=&control/scenarios.csv,  to=&SQF_RUNDIR/control_snapshot/scenarios.csv)
-    %sqf_copy_file(from=&control/steps.csv,      to=&SQF_RUNDIR/control_snapshot/steps.csv)
-    %sqf_copy_file(from=&control/parameters.csv, to=&SQF_RUNDIR/control_snapshot/parameters.csv)
+    %sqf_copy_file(from=&control/scenarios.csv,  to=&SQF_RUNROOT/control_snapshot/scenarios.csv)
+    %sqf_copy_file(from=&control/steps.csv,      to=&SQF_RUNROOT/control_snapshot/steps.csv)
+    %sqf_copy_file(from=&control/parameters.csv, to=&SQF_RUNROOT/control_snapshot/parameters.csv)
 %end;
 %let SQF_PREP = OK;
 %mend sqf_prep;
@@ -3601,7 +3604,7 @@ libname SQFIN clear;
 %if %sysfunc(libref(SQFPREV)) = 0 %then %do;
     libname SQFPREV clear;
 %end;
-%sqf_write_runinfo(rundir=&SQF_RUNDIR, run_id=&SQF_RUNID, scenario=&SQF_SCEN_R,
+%sqf_write_runinfo(rundir=&SQF_RUNROOT, run_id=&SQF_RUNID, scenario=&SQF_SCEN_R,
                    mode=&SQF_MODE_R, status=&status, fail_phase=&SQF_FAIL_PHASE,
                    fail_step=&SQF_FAIL_STEP, iterations=&iterations,
                    iter_done=&iter_done, start_dt=&SQF_START_DT,
@@ -3616,14 +3619,14 @@ libname SQFIN clear;
 %end;
 %let SQF_LAST_RUN_ID  = &SQF_RUNID;
 %let SQF_LAST_STATUS  = &status;
-%let SQF_LAST_RUN_DIR = &SQF_RUNDIR;
+%let SQF_LAST_RUN_DIR = &SQF_RUNROOT;
 %put NOTE: [SQF] ==========================================================;
 %put NOTE: [SQF] scenario &SQF_SCEN_R run &SQF_RUNID;
 %put NOTE: [SQF] status : &status;
 %if %length(&SQF_FAIL_PHASE) > 0 %then
     %put NOTE: [SQF] failed : phase &SQF_FAIL_PHASE step &SQF_FAIL_STEP;
-%put NOTE: [SQF] folder : &SQF_RUNDIR;
-%put NOTE: [SQF] report : &SQF_RUNDIR/audit/report.html (per iteration for chains);
+%put NOTE: [SQF] folder : &SQF_RUNROOT;
+%put NOTE: [SQF] report : &SQF_RUNROOT/audit/report.html (per iteration for chains);
 %put NOTE: [SQF] ==========================================================;
 %sqf_opts_restore()
 %if %upcase(&onfail) = ABORT and &status ne COMPLETED and &status ne VALIDATED %then %do;
@@ -3644,7 +3647,7 @@ libname SQFIN clear;
     %sqf_opts_restore()
     %return;
 %end;
-%sqf_iter(iter=1, iterdir=&SQF_RUNDIR, chain=0, do_validate=1,
+%sqf_iter(iter=1, iterdir=&SQF_RUNROOT, chain=0, do_validate=1,
           prelude=&prelude, html=&html)
 %sqf_finish(status=&SQF_ITER_STATUS, iterations=1,
             iter_done=%eval(&SQF_ITER_STATUS = COMPLETED), onfail=&onfail)
@@ -3681,7 +3684,7 @@ run;
 %let _prev = ;
 %let _i = 1;
 %do %while (&_i <= &iterations and &_go = 1);
-    %let _iterdir = &SQF_RUNDIR/iter_%sysfunc(putn(&_i, z2.));
+    %let _iterdir = &SQF_RUNROOT/iter_%sysfunc(putn(&_i, z2.));
     %put NOTE: [SQF] ---- chain iteration &_i of &iterations ----;
     %sqf_iter(iter=&_i, iterdir=&_iterdir, chain=1, prevdir=&_prev,
               do_validate=%eval(&_i = 1), prelude=&prelude, html=&html)
@@ -3703,7 +3706,7 @@ run;
     %else %let _go = 0;
     %let _i = %eval(&_i + 1);
 %end;
-libname _sqri "&SQF_RUNDIR";
+libname _sqri "&SQF_RUNROOT";
 %if %sysfunc(libref(_sqri)) = 0 %then %do;
     data _sqri.chain_manifest; set work._sqf_manifest; run;
     libname _sqri clear;

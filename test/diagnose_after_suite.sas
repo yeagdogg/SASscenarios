@@ -53,4 +53,13 @@ proc sql outobs=10;
 quit;
 title;
 
+/* T17: revalidate the CSV scenario and show the exact findings */
+%run_scenario(scenario=CSVAGE, control=&TROOT/csv, mode=VALIDATE, html=N)
+title "DIAG 4: CSVAGE validation findings (why T17 refused to run)";
+proc print data=work._sqf_verrors noobs; run;
+title "DIAG 5: what the CSV loader actually parsed";
+proc print data=work._sqf_scenarios noobs; run;
+proc print data=work._sqf_steps noobs; run;
+title;
+
 %put DIAG: done - send a photo of the printed output plus any DIAG: lines in the log.;
