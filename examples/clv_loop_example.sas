@@ -25,12 +25,14 @@ data work.clv_rules;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. target :$41. keys :$200.
           source :$41. columns :$1000. assign :$8000. options :$200.;
-datalines;
+/* cols: scenario|hook|seq|verb|target|keys|source|columns|assign|options
+   (DATALINES4 + ;;;; because rule cells contain semicolons)          */
+datalines4;
 RENEWAL|POLICIES|10|SET|||||policy_age = policy_age + 1;|
 RENEWAL|GUIDANCE_100|10|JOIN||POL_ID|WORK.CARRY|PRIOR_MOD=EXPIRING_MOD||ITERS=2+
 RENEWAL|GUIDANCE_100|20|SET|||||rate_change = rate_change * &RATE_DRIFT;|
 RENEWAL||10|LET|RATE_DRIFT||||1.03|
-;
+;;;;
 run;
 
 %macro clv_loop(years=&YEARS);

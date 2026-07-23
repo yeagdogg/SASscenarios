@@ -56,29 +56,33 @@ libname results "&RESULTS";
 %wif_report
 
 /*--------------------------------------------------------------------
-  4) Ad-hoc: rules straight from datalines, no workbook involved
-     (text in datalines never touches the macro processor)
+  4) Ad-hoc: rules straight from datalines, no workbook involved.
+     Cell text in datalines never reaches the macro processor, so
+     ampersands / percent signs are safe as-is. DATALINES4 + the ;;;;
+     terminator are REQUIRED: rule cells contain semicolons, and a
+     plain datalines block ends at the first one.
 --------------------------------------------------------------------*/
 data work.quick_rules;
-    length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41
-           columns $1000 assign $8000 options $200;
+    length scenario $32 hook $32 seq 8 verb $8 target $41 keys $200
+           source $41 columns $1000 assign $8000 options $200;
     infile datalines dsd dlm='|' truncover;
-    input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
-          columns :$1000. assign :$8000. options :$200.;
-datalines;
-QUICK|GUIDANCE_100|10|SET||||sched_mod = min(sched_mod, 1.25);|
-QUICK|RATED|10|JOIN|NAICS LOB STATE|WORK.MKT_ADJ|ADJ_FACTOR|rate = rate * adj_factor;|
-;
+    input scenario :$32. hook :$32. seq verb :$8. target :$41. keys :$200.
+          source :$41. columns :$1000. assign :$8000. options :$200.;
+/* cols: scenario|hook|seq|verb|target|keys|source|columns|assign|options */
+datalines4;
+QUICK|GUIDANCE_100|10|SET|||||sched_mod = min(sched_mod, 1.25);|
+QUICK|RATED|10|JOIN||NAICS LOB STATE|WORK.MKT_ADJ|ADJ_FACTOR|rate = rate * adj_factor;|
+;;;;
 run;
 
 data work.mkt_adj;         /* the bulk what-if lookup, built in-session */
     length naics $6 lob $3 state $2 adj_factor 8;
     infile datalines dsd dlm='|';
     input naics :$6. lob :$3. state :$2. adj_factor;
-datalines;
+datalines4;
 N100|GL|NY|1.10
 N101|PR|NJ|0.95
-;
+;;;;
 run;
 
 %wif_init(scenario=QUICK, rules=work.quick_rules)

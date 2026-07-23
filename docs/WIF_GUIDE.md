@@ -138,20 +138,24 @@ a lint error before anything is touched. Parameter names may not start with
 
 ## Three ways to author rules
 
-**1. Datalines (ad-hoc, zero quoting pain — text is data, the macro
-processor never sees it):**
+**1. Datalines (ad-hoc, zero quoting pain — cell text is data, the macro
+processor never sees it, so `&` and `%` are safe as-is).** Two rules of the
+road: use **`datalines4` with a `;;;;` terminator** (rule cells contain
+semicolons, and a plain `datalines` block ends at the first one — SAS's
+documented restriction), and keep this exact column order everywhere:
 
 ```sas
 data work.rules;
-    length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41
-           columns $1000 assign $8000 options $200;
+    length scenario $32 hook $32 seq 8 verb $8 target $41 keys $200
+           source $41 columns $1000 assign $8000 options $200;
     infile datalines dsd dlm='|' truncover;
-    input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
-          columns :$1000. assign :$8000. options :$200.;
-datalines;
-RENEWAL|POLICIES|10|SET||||policy_age = policy_age + 1;|
-RENEWAL|GUIDANCE_100|10|JOIN|POL_ID|WORK.CARRY|SCHED_MOD=EXPIRING_MOD||ITERS=2+
-;
+    input scenario :$32. hook :$32. seq verb :$8. target :$41. keys :$200.
+          source :$41. columns :$1000. assign :$8000. options :$200.;
+/* cols: scenario|hook|seq|verb|target|keys|source|columns|assign|options */
+datalines4;
+RENEWAL|POLICIES|10|SET|||||policy_age = policy_age + 1;|
+RENEWAL|GUIDANCE_100|10|JOIN||POL_ID|WORK.CARRY|SCHED_MOD=EXPIRING_MOD||ITERS=2+
+;;;;
 run;
 %wif_init(scenario=RENEWAL, rules=work.rules)
 ```

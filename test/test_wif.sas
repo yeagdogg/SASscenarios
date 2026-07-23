@@ -246,10 +246,10 @@ data work.r_t02;
     length scenario $32 hook $32 seq 8 verb $8 where_clause $2000 assign $8000 options $200;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. where_clause :$2000. assign :$8000. options :$200.;
-datalines;
+datalines4;
 BASETEST|POLICIES|10|SET|region = 'E'|policy_age = policy_age + 1;|
 BASETEST|POLICIES|20|SET|region = 'Q'|premium = 0;|NOWARN0
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=BASETEST, rules=work.r_t02, onfail=CONTINUE)
@@ -288,11 +288,11 @@ data work.r_t03;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
           columns :$1000. assign :$8000.;
-datalines;
+datalines4;
 JOINTEST|POLICIES|10|JOIN|POL_ID|WORK.CARRY|NEW_MOD=SCHED_MOD|premium = premium * 1.01;
 JOINTEST|AUTOJ|10|JOIN|POL_ID|WORK.SAMECOL||
 JOINTEST|RATED|10|JOIN|NAICS LOB STATE|WORK.MKT_ADJ|ADJ_FACTOR|rate = rate * adj_factor;
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=JOINTEST, rules=work.r_t03, onfail=CONTINUE)
@@ -382,10 +382,10 @@ data work.r_t04;
     length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41 columns $1000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41. columns :$1000.;
-datalines;
+datalines4;
 DUPTEST|POLICIES|10|JOIN|POL_ID|WORK.DUPADJ|NEW_MOD=SCHED_MOD
 DUPTEST|BADK|10|JOIN|POL_ID|WORK.BADKEY|NEW_MOD=SCHED_MOD
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=DUPTEST, rules=work.r_t04, onfail=CONTINUE)
@@ -411,14 +411,14 @@ data work.r_t05;
     length scenario $32 hook $32 seq 8 verb $8 where_clause $2000 assign $8000 options $200;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. where_clause :$2000. assign :$8000. options :$200.;
-datalines;
+datalines4;
 LINTBAD|T1|10|SET|region <> 'E'|premium = 0;|
 LINTBAD|T2|10|SET|policy_age between 20 and 30|premium = 0;|
 LINTBAD|T3|10|SET||premium = &NOSUCHPARAM;|
 LINTBAD|T5|10|SET||run; delete;|
 LINTBAD|T6|10|FROB||x = 1;|
 LINTBAD|T7|10|SET||premium = 0;|BOGUSOPT
-;
+;;;;
 run;
 /* the unbalanced-quote plant is built with byte(39) so THIS file
    stays balanced for the dev-side linter while the CELL is broken  */
@@ -445,11 +445,11 @@ data work.r_t06;
     length scenario $32 hook $32 seq 8 verb $8 where_clause $2000 assign $8000 options $200;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. where_clause :$2000. assign :$8000. options :$200.;
-datalines;
+datalines4;
 PFTEST|POLICIES|10|SET||policy_agee = policy_age + 1;|
 PFTEST|OKNEW|10|SET||bonus_flag = 1;|NEWCOLS
 PFTEST|BADWHERE|10|SET|regoin = 'E'|premium = 0;|
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=PFTEST, rules=work.r_t06, onfail=CONTINUE)
@@ -489,14 +489,14 @@ data work.r_t07;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. target :$41. where_clause :$2000.
           source :$41. columns :$1000. options :$200.;
-datalines;
+datalines4;
 VERBS|POLICIES|10|FILTER||status ne 'LAP'|||
 VERBS|DROPF|10|FILTER||status = 'LAP'|||DROP
 VERBS|APPX|10|APPEND||yr = 2027|WORK.SHOCK|AMT_GROSS=PREMIUM|
 VERBS|REPL|10|REPLACE|||WORK.NEWVER||
 VERBS|REPLX|10|REPLACE|||WORK.NEWVER||KEEPEXTRA
 VERBS|REPLBAD|10|REPLACE|||WORK.BADVER||
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=VERBS, rules=work.r_t07, onfail=CONTINUE)
@@ -555,9 +555,9 @@ data work.r_t08;
     length scenario $32 hook $32 seq 8 verb $8 assign $8000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. assign :$8000.;
-datalines;
+datalines4;
 CODET|POLICIES|10|CODE|proc sort data=&WIF_TABLE.; by descending pol_id; run;
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=CODET, rules=work.r_t08, onfail=CONTINUE)
@@ -579,10 +579,10 @@ data work.r_t09;
     length scenario $32 hook $32 seq 8 verb $8 assign $8000 options $200;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. assign :$8000. options :$200.;
-datalines;
+datalines4;
 LOOPT|SEGLOOP|10|SET|premium = premium * 2;|
 LOOPT|POLICIES|10|SET|policy_age = policy_age + 1;|ONCE
-;
+;;;;
 run;
 data work.seg_1; length seg 8 premium 8; seg = 1; premium = 10; run;
 data work.seg_2; length seg 8 premium 8; seg = 2; premium = 20; run;
@@ -624,10 +624,10 @@ data work.r_t10;
     length scenario $32 hook $32 seq 8 verb $8 assign $8000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. assign :$8000.;
-datalines;
+datalines4;
 MISST|NO_SUCH_TABLE|10|SET|x = 1;|
 MISST|POLVIEW|10|SET|premium = 0;|
-;
+;;;;
 run;
 proc sql;
     create view work.polview as select * from work.g_policies;
@@ -652,9 +652,9 @@ data work.r_t11;
     length scenario $32 hook $32 seq 8 verb $8 assign $8000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. assign :$8000.;
-datalines;
+datalines4;
 SRTT|SRTPOL|10|SET|premium = premium + 1;|
-;
+;;;;
 run;
 proc sort data=work.g_policies out=work.srtpol(label='WIF sort test');
     by region pol_id;
@@ -687,9 +687,9 @@ data work.r_t12;
     length scenario $32 hook $32 seq 8 verb $8 target $41 where_clause $2000 assign $8000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. target :$41. where_clause :$2000. assign :$8000.;
-datalines;
+datalines4;
 STAGET|INPUT|10|SET|TRAW.RATES_PERM|rate_year = 2027|rate_change = rate_change * 1.10;
-;
+;;;;
 run;
 libname TRAW "&TROOT/base";
 %wif_init(scenario=STAGET, rules=work.r_t12, onfail=CONTINUE)
@@ -764,10 +764,10 @@ data work.r_t14;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
           columns :$1000. assign :$8000. options :$200.;
-datalines;
+datalines4;
 CLV|TERM|10|SET||||age = age + 1;|
 CLV|TERM|20|JOIN|POL_ID|WORK.CLVCARRY|PRIOR_MOD=EXPIRING_MOD||ITERS=2+
-;
+;;;;
 run;
 data work.g_term;
     length pol_id 8 age 8 mod 8 expiring_mod 8;
@@ -829,11 +829,11 @@ data work.r_t15;
     length scenario $32 hook $32 seq 8 verb $8 target $41 assign $8000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. target :$41. assign :$8000.;
-datalines;
+datalines4;
 |RUNIN|10|SET||premium = premium * &FCT;
 UP|||LET|FCT|1.10
 DOWN|||LET|FCT|0.90
-;
+;;;;
 run;
 data work.g_runin;
     length pol_id 8 premium 8;
@@ -910,9 +910,9 @@ data work.r_t17;
     length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41 columns $1000;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41. columns :$1000.;
-datalines;
+datalines4;
 OPTT|POLICIES|10|JOIN|POL_ID|WORK.NO_SUCH_SOURCE|X=Y
-;
+;;;;
 run;
 %fresh(policies)
 %wif_init(scenario=OPTT, rules=work.r_t17, onfail=CONTINUE)

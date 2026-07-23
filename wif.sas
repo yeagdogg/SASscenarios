@@ -34,7 +34,7 @@
 %global WIF_ACTIVE WIF_RC WIF_ITER WIF_SCENARIO WIF_ONFAIL WIF_GEN
         WIF_FIRE WIF_GENDIR WIF_MAXHASH WIF_TABLE WIF_HOOK WIF_MSG
         WIF_RULES_SRC WIF_VERSION WIF_UTILRC WIF_AFF WIF_NB WIF_NA
-        WIF_OPTS_SAVED;
+        WIF_OPTS_SAVED WIF_PARAMSTR;
 %if %length(&WIF_OPTS_SAVED) = 0 %then %let WIF_OPTS_SAVED = 0;
 %if %length(&WIF_ACTIVE) = 0 %then %let WIF_ACTIVE = 0;
 %if "&WIF_ACTIVE" ne "1" %then %let WIF_ACTIVE = 0;
@@ -44,7 +44,7 @@
 %if %length(&WIF_ONFAIL)  = 0 %then %let WIF_ONFAIL  = STOP;
 %if %length(&WIF_MAXHASH) = 0 %then %let WIF_MAXHASH = 500000000;
 %if %length(&WIF_RC)      = 0 %then %let WIF_RC      = 0;
-%let WIF_VERSION = 1.0.0;
+%let WIF_VERSION = 1.0.1;
 %put NOTE: [WIF] wif.sas v&WIF_VERSION compiled. WIF_ACTIVE=&WIF_ACTIVE..;
 %mend _wif_bootstrap;
 
@@ -407,7 +407,7 @@ libname _wifxl xlsx "&_f";
     %if %sysfunc(exist(&out)) %then %do;
         %let _ok = 1;
         %let syscc = &_svcc;
-        %put NOTE: [WIF] xlsx engine unavailable; PROC IMPORT fallback read the workbook.;
+        %put NOTE: [WIF] xlsx engine unavailable - PROC IMPORT fallback read the workbook.;
     %end;
     %else %do;
         %let WIF_MSG = Could not read sheet RULES from &_f.. Check SAS/ACCESS to PC Files licensing, that the path is visible to the SAS server, and that the workbook is not open in Excel. Fallback: import the sheet to a dataset in EG and pass rules=that-dataset.;
@@ -451,7 +451,8 @@ libname _wifxl xlsx "&_f";
 /* keep this scenario + globals; drop active=N (recorded as skipped
    at fire time only if you list them -- keeping the kernel lean)    */
 data work._wif_rules work._wif_lets(keep=scenario name value);
-    length name $32 value $2000;
+    length name $32 value $8000;    /* match the assign column - a LET
+                                       value must never truncate silently */
     set work._wif_rules_all;
     where scenario in (' ', "%upcase(&scenario)");
     if active = 'N' then delete;
@@ -497,12 +498,12 @@ quit;
 %macro _wif_build_params(scenario=, iter=);
 %global WIF_PARAMSTR;
 data work._wif_params0;
-    length name $32 value $2000 _ord 8;
+    length name $32 value $8000 _ord 8;
     set work._wif_lets(keep=name value);
     _ord = 1;
 run;
 data work._wif_params1;
-    length name $32 value $2000 _ord 8 _s $4000 _tok $2100;
+    length name $32 value $8000 _ord 8 _s $32767 _tok $8200;
     _ord = 2;
     _s = symget('WIF_PARAMSTR');
     if lengthn(_s) > 0 then do _wi = 1 to countw(_s, '|');
@@ -524,7 +525,7 @@ run;
 /* built-ins last so they always win; scenario and iter were
    validated by wif_init before this runs                            */
 data work._wif_params2;
-    length name $32 value $2000 _ord 8;
+    length name $32 value $8000 _ord 8;
     _ord = 3;
     name = 'WIF_ITER';     value = "&iter";              output;
     name = 'WIF_SCENARIO'; value = "%upcase(&scenario)"; output;
@@ -580,7 +581,7 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
      work._wif_scanerr(keep=sev hook seq field message);
     length sev $1 field $32 message $500 where_ops $1;
     array _pnm {220} $32   _temporary_;
-    array _pvl {220} $2000 _temporary_;
+    array _pvl {220} $8000 _temporary_;
     retain _pc 0;
     if _n_ = 1 then do;
         do _pi = 1 to min(_pn, 217);
@@ -598,7 +599,7 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
     set work._wif_rules;
     where_ops = 'N';
 
-    length _txt _buf _mbuf $32767 _fld $32 _nm $65 _vv $2000 _ch _nx _ck $1;
+    length _txt _buf _mbuf _ntxt $32767 _fld $32 _nm $65 _vv $8000 _ch _nx _ck $1;
     array _tv {3} where_clause source assign;
 
     do _ti = 1 to 3;
@@ -612,6 +613,7 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
         _i  = 1;
         _len = lengthn(_txt);
         _ovf = 0;
+        _nsub = 0;               /* substitutions done in this cell  */
         do while (_i <= _len);
             _ch = char(_txt, _i);
             _nx = ' ';
@@ -801,17 +803,39 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
                 if _i <= _len then if char(_txt, _i) = '.' then _i = _i + 1;
             end;
             else do;
+                /* INJECT the value into the scan stream and RESCAN it:
+                   value characters must pass through the same quote /
+                   paren state machine and stay VISIBLE to the operator
+                   and statement-token checks. (The old splice bypassed
+                   both, letting an unbalanced quote or a WHERE-only
+                   operator inside a parameter VALUE through the lint.) */
                 _vv = _pvl{_hit};
                 _vl = lengthn(_vv);
-                if _bl + _vl > 32767 then _ovf = 1;
-                else if _vl > 0 then do;
-                    substr(_buf,  _bl + 1, _vl) = substr(_vv, 1, _vl);
-                    substr(_mbuf, _bl + 1, _vl) = repeat(' ', max(_vl - 1, 0));
-                    _bl = _bl + _vl;
-                end;
-                _i = _k;
+                _k2 = _k;
                 /* one trailing dot delimits the reference, SAS-style */
-                if _i <= _len then if char(_txt, _i) = '.' then _i = _i + 1;
+                if _k2 <= _len then if char(_txt, _k2) = '.' then _k2 = _k2 + 1;
+                _rl = 0;
+                if _k2 <= _len then _rl = _len - _k2 + 1;
+                _nsub + 1;
+                if _nsub > 200 then do;
+                    sev='E'; field=_fld;
+                    message=catx(' ', 'More than 200 parameter substitutions in one',
+                                 _fld, 'cell - circular LET references?');
+                    output work._wif_scanerr;
+                    _i = _len + 1;
+                end;
+                else if _vl + _rl > 32767 then do;
+                    _ovf = 1;
+                    _i = _len + 1;
+                end;
+                else do;
+                    _ntxt = ' ';
+                    if _vl > 0 then substr(_ntxt, 1, _vl) = substr(_vv, 1, _vl);
+                    if _rl > 0 then substr(_ntxt, _vl + 1, _rl) = substr(_txt, _k2, _rl);
+                    _txt = _ntxt;
+                    _len = _vl + _rl;
+                    _i = 1;
+                end;
             end;
         end;
     end;
@@ -1063,6 +1087,11 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
             message='INPUT rules need a two-level target (libref.table) so WIF knows which library to stage.';
             output work._wif_ckerr;
         end;
+        else if upcase(strip(scan(target, 1, '.'))) = 'WORK' then do;
+            sev='E'; field='TARGET';
+            message='INPUT rules stage PERMANENT inputs behind a readonly base. A WORK table needs no staging - hook it directly where it is created.';
+            output work._wif_ckerr;
+        end;
         if opt_once = 1 then do;
             sev='E'; field='OPTIONS';
             message='ONCE does not apply to INPUT rules (staging runs once per init by construction).';
@@ -1163,7 +1192,7 @@ proc datasets lib=work nolist nowarn; delete _wif_ckerr _wif_dupev; quit;
     %end;
 %end;
 %else %if &WIF_LINTW > 0 %then
-    %put WARNING: [WIF] &WIF_LINTW lint warning(s); see work._wif_lerrs.;
+    %put WARNING: [WIF] &WIF_LINTW lint warning(s) - see work._wif_lerrs.;
 %mend _wif_lint_tally;
 
 /*------------------------------------------------------------------
@@ -1302,7 +1331,28 @@ data _null_;
     _dsopt = ' ';
     if "&compress" = '1' then _dsopt = 'compress=yes';
     if verb in ('SET', 'JOIN', 'FILTER') then do;
-        if lengthn(_sby) > 0 then _dsopt = catx(' ', _dsopt, 'sortedby=' || strip(_sby));
+        if lengthn(_sby) > 0 then do;
+            /* re-assert the sort flag ONLY when the rule provably does
+               not touch a sort-key column: a false sortedby= makes a
+               later PROC SORT skip itself ("already sorted") and every
+               downstream BY-group silently wrong. Losing a valid flag
+               costs one re-sort; stamping a false one costs the truth. */
+            _sok = 1;
+            if verb in ('SET', 'JOIN') then do;
+                do _sk = 1 to countw(_sby, ' ');
+                    _w2 = upcase(scan(_sby, _sk, ' '));
+                    if _w2 ne 'DESCENDING' then do;
+                        if lengthn(_atxt) > 0 then do;
+                            if prxmatch(cats('/\b', strip(_w2), '\b/i'), _atxt) then _sok = 0;
+                        end;
+                        if verb = 'JOIN' then do;
+                            if indexw(catx(' ', _mtgt, _keeps), _w2) > 0 then _sok = 0;
+                        end;
+                    end;
+                end;
+            end;
+            if _sok = 1 then _dsopt = catx(' ', _dsopt, 'sortedby=' || strip(_sby));
+        end;
     end;
     if verb in ('SET', 'JOIN', 'FILTER', 'APPEND') then do;
         if lengthn(_lbl) > 0 then
@@ -1526,6 +1576,12 @@ data _null_;
                              'not found in source', source, '.');
                 return;
             end;
+            if indexw(_klist, _s1) > 0 and _s1 ne _t1 then do;
+                _perr = 1;
+                _pmsg = catx(' ', 'JOIN cannot rename key variable', _s1,
+                             'in the columns mapping - keys are matched, not copied.');
+                return;
+            end;
             if indexw(_msrc, _s1) > 0 then do;
                 _perr = 1;
                 _pmsg = catx(' ', 'JOIN columns lists source column', _s1, 'twice.');
@@ -1563,7 +1619,14 @@ data _null_;
             return;
         end;
     end;
-    /* hash memory pre-check: logical source size                     */
+    /* hash memory pre-check: logical source size. Views report
+       NLOBS=-1, which would silently bypass the guard.               */
+    if attrn(_sid, 'NLOBS') < 0 then do;
+        _perr = 1;
+        _pmsg = catx(' ', 'JOIN source', source,
+                     'is a view - its size cannot be pre-checked. Materialize it to a table first (or use a CODE rule).');
+        return;
+    end;
     _est = attrn(_sid, 'NLOBS') * attrn(_sid, 'LRECL');
     if _est > input(symget('WIF_MAXHASH'), best32.) then do;
         _perr = 1;
@@ -1635,6 +1698,21 @@ data _null_;
         _msrc = catx(' ', _msrc, _s1);
         _mtgt = catx(' ', _mtgt, _t1);
         if _s1 ne _t1 then _rens = catx(' ', _rens, strip(_s1) || '=' || strip(_t1));
+    end;
+    /* a rename onto a column the source ALSO has collides at run
+       time ("variable already exists") - catch it at prep            */
+    do _mp = 1 to countw(_mtgt, ' ');
+        _w2 = scan(_mtgt, _mp, ' ');
+        _s1 = scan(_msrc, _mp, ' ');
+        if _w2 ne _s1 then do;
+            if varnum(_sid, _w2) > 0 and indexw(_msrc, _w2) = 0 then do;
+                _perr = 1;
+                _pmsg = catx(' ', 'REPLACE mapping renames', _s1, 'onto', _w2,
+                             'but the source also has a column named', _w2,
+                             '- map or exclude that source column too.');
+                return;
+            end;
+        end;
     end;
     /* every target column must be available after mapping            */
     do _tv = 1 to attrn(_fid, 'nvars');
@@ -1813,7 +1891,7 @@ quit;
     %if &syscc > 4 %then %do;
         %let WIF_MSG = Assignments failed to compile or run (see the preflight step in the log above). The table was NOT touched.;
         %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-        %put ERROR: [WIF] rule seq &_seq (SET) failed preflight; &to untouched.;
+        %put ERROR: [WIF] rule seq &_seq (SET) failed preflight - &to untouched.;
         %let _failed = 1;
         %goto fin;
     %end;
@@ -1821,7 +1899,7 @@ quit;
     proc datasets lib=work nolist nowarn; delete _wif_pf; quit;
     %if &WIF_CDRC = 1 %then %do;
         %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-        %put ERROR: [WIF] rule seq &_seq (SET) rejected by preflight; &to untouched.;
+        %put ERROR: [WIF] rule seq &_seq (SET) rejected by preflight - &to untouched.;
         %let _failed = 1;
         %goto fin;
     %end;
@@ -1840,7 +1918,7 @@ quit;
 %if &syscc > 4 %then %do;
     %let WIF_MSG = Rule step failed (see log above). A same-name rewrite only replaces the table at successful completion, so &to kept its previous contents. If an EG data grid has it open, close the grid.;
     %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-    %put ERROR: [WIF] rule seq &_seq (&_verb) on &to FAILED; previous contents preserved.;
+    %put ERROR: [WIF] rule seq &_seq (&_verb) on &to FAILED - previous contents preserved.;
     %let _failed = 1;
     %goto fin;
 %end;
@@ -1911,6 +1989,10 @@ quit;
 %else %let _hk = &_mem;
 %if not %sysfunc(nvalid(&_hk, v7)) %then %do;
     %put ERROR: [WIF] bad hook name: &_hk;
+    %return;
+%end;
+%if &_hk = INPUT %then %do;
+    %put WARNING: [WIF] the hook name INPUT is reserved for staging rules - rename the table or hook it with at= and a different name. Nothing done.;
     %return;
 %end;
 %let _tgt = &_lib..&_mem;
@@ -2069,7 +2151,7 @@ proc datasets lib=work nolist nowarn; delete _wif_todo; quit;
 %_wif_nobs(ds=work._wif_sttodo, mvar=_n)
 %if &_n = 0 %then %do;
     %if %length(%superq(base)) > 0 %then
-        %put NOTE: [WIF] base= given but no INPUT rules; nothing staged.;
+        %put NOTE: [WIF] base= given but no INPUT rules - nothing staged.;
     %return;
 %end;
 
@@ -2115,12 +2197,24 @@ quit;
         %let WIF_RC = 1;
         %return;
     %end;
-    /* remember what to restore: prior assignment if any, else clear */
+    /* remember what to restore: prior assignment if any, else clear.
+       READONLY must be captured too - restoring a protected libref
+       writable would silently drop the user's write protection.     */
+    %local _dro;
+    %let _dro = NO;
+    %if %sysfunc(libref(&inlib)) = 0 %then %do;
+        proc sql noprint;
+            select max(readonly) into :_dro trimmed
+            from dictionary.libnames
+            where libname = "%upcase(&inlib)";
+        quit;
+    %end;
     data work._wif_libsave;
         length k 8 libref $8 path $500 ro $1;
         k = 1;
         libref = upcase("&inlib");
-        path = ' '; ro = 'N';
+        path = ' ';
+        ro = ifc(upcase(strip(symget('_dro'))) = 'YES', 'Y', 'N');
         if libref(libref) = 0 then do;
             path = pathname(libref);
             /* a concatenation cannot be restored from pathname()    */
@@ -2133,7 +2227,7 @@ quit;
         select path into :_chk trimmed from work._wif_libsave;
     quit;
     %if "&_chk" = "?CONCAT?" %then %do;
-        %put ERROR: [WIF] libref &inlib is already a concatenation; WIF cannot restore that on wif_off. Clear it first or use a fresh libref.;
+        %put ERROR: [WIF] libref &inlib is already a concatenation - WIF cannot restore that on wif_off. Clear it first or use a fresh libref.;
         %let WIF_RC = 1;
         proc datasets lib=work nolist nowarn; delete _wif_libsave; quit;
         %return;
@@ -2170,7 +2264,7 @@ quit;
                 where libname = "%upcase(&_lib)";
         quit;
         %if &_nrow > 1 %then %do;
-            %put ERROR: [WIF] libref &_lib is a concatenation; v1 stages single-path BASE librefs only. Point a plain libref at the folder, or hook the first WORK table instead.;
+            %put ERROR: [WIF] libref &_lib is a concatenation - v1 stages single-path BASE librefs only. Point a plain libref at the folder, or hook the first WORK table instead.;
             %let WIF_RC = 1;
             %return;
         %end;
@@ -2255,7 +2349,7 @@ quit;
 %end;
 
 %if &_bail = 1 %then %do;
-    %put ERROR: [WIF] INPUT staging failed; restoring librefs, nothing activated.;
+    %put ERROR: [WIF] INPUT staging failed - restoring librefs, nothing activated.;
     libname _WIFI clear;
     %_wif_restore_libs()
     proc datasets lib=work nolist nowarn; delete _wif_stlibs _wif_todo; quit;
@@ -2265,17 +2359,38 @@ quit;
 /* ---- repoint the librefs: staged first, readonly base second ---- */
 %if %length(%superq(base)) > 0 %then %do;
     libname &inlib ("&_stagedir" _WIFB1);
+    %if &syslibrc ne 0 %then %do;
+        %put ERROR: [WIF] could not repoint libref &inlib (syslibrc=&syslibrc) - restoring librefs, nothing activated.;
+        %let WIF_RC = 1;
+        libname _WIFI clear;
+        %_wif_restore_libs()
+        proc datasets lib=work nolist nowarn; delete _wif_stlibs _wif_todo; quit;
+        %return;
+    %end;
     %put NOTE: [WIF] libref &inlib now reads staged copies first, then the readonly base &_b..;
 %end;
 %else %do;
     %do _i = 1 %to &_nlibs;
-        %let _lib = ;
-        proc sql noprint;
-            select libref into :_lib trimmed
-            from work._wif_libsave where k = &_i;
-        quit;
-        libname &_lib ("&_stagedir" _WIFB&_i);
-        %put NOTE: [WIF] libref &_lib now reads staged copies first, then its readonly base.;
+        %if &_bail = 0 %then %do;
+            %let _lib = ;
+            proc sql noprint;
+                select libref into :_lib trimmed
+                from work._wif_libsave where k = &_i;
+            quit;
+            libname &_lib ("&_stagedir" _WIFB&_i);
+            %if &syslibrc ne 0 %then %do;
+                %put ERROR: [WIF] could not repoint libref &_lib (syslibrc=&syslibrc) - restoring librefs, nothing activated.;
+                %let WIF_RC = 1;
+                %let _bail = 1;
+            %end;
+            %else %put NOTE: [WIF] libref &_lib now reads staged copies first, then its readonly base.;
+        %end;
+    %end;
+    %if &_bail = 1 %then %do;
+        libname _WIFI clear;
+        %_wif_restore_libs()
+        proc datasets lib=work nolist nowarn; delete _wif_stlibs _wif_todo; quit;
+        %return;
     %end;
 %end;
 libname _WIFI clear;
@@ -2407,7 +2522,7 @@ run;
 %let WIF_ACTIVE = 1;
 %put NOTE: [WIF] ============================================================;
 %put NOTE: [WIF] scenario &WIF_SCENARIO ACTIVE (iter=&WIF_ITER, onfail=&WIF_ONFAIL, &WIF_LOADN rule(s)).;
-%put NOTE: [WIF] hooks will fire as the program runs; wif_off deactivates.;
+%put NOTE: [WIF] hooks will fire as the program runs - wif_off deactivates.;
 %put NOTE: [WIF] ============================================================;
 %mend _wif_init_core;
 
@@ -2454,7 +2569,7 @@ title;
 /* Validate rules without activating anything.                       */
 %macro wif_lint(rules=, scenario=, iter=1, params=);
 %if "&WIF_ACTIVE" = "1" %then
-    %put WARNING: [WIF] wif_lint replaces the loaded rules of the ACTIVE scenario; run wif_init again before the next hooked submit.;
+    %put WARNING: [WIF] wif_lint replaces the loaded rules of the ACTIVE scenario - run wif_init again before the next hooked submit.;
 %if %length(%superq(scenario)) = 0 %then %do;
     %put ERROR: [WIF] wif_lint needs scenario= (rules are validated per scenario).;
     %return;
@@ -2502,7 +2617,7 @@ run;
 %include "&_m" / lrecl=32767;
 options obs=max replace nosyntaxcheck;
 %if &syscc > 4 %then %do;
-    %put ERROR: [WIF] main program failed under scenario %upcase(&scenario) (syscc=&syscc); outputs NOT saved.;
+    %put ERROR: [WIF] main program failed under scenario %upcase(&scenario) (syscc=&syscc) - outputs NOT saved.;
     %wif_off()
     %if %upcase(&onfail) = STOP %then %do;
         %let WIF_RC = 2;

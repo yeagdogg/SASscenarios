@@ -13,6 +13,10 @@ Checks (no SAS available locally, so this is the syntax safety net):
   8. %wif( hook placement: a hook must sit at a step boundary -- the
      statement before it must be run; / quit; / a %-statement -- never
      inside a DATA step or between PROC SQL statements (WIF kernel)
+  9. raw ';' inside %put message text (the %put terminates there and
+     the rest becomes stray tokens); %str(;) / %nrstr(;) are allowed
+ 10. semicolons inside plain DATALINES/CARDS data (SAS ends the block
+     at the FIRST ';' anywhere in the data; DATALINES4 required)
 """
 import re
 import sys
@@ -305,6 +309,53 @@ for m in wif_call.finditer(stripped):
         f"line {ln}: %wif( hook not preceded by a completed statement - "
         f"place hooks right after run;/quit;"
     )
+
+# ---------- check 9: raw ';' inside %put message text ----------
+# A %put statement terminates at its first ';'; anything after it on
+# the line becomes stray tokens (the class behind 12 shipped defects).
+# %str(;) / %nrstr(;) are the sanctioned escapes and are masked first.
+masked_put = re.sub(r"%n?r?str\(\s*;\s*\)", "<SEMI>", stripped, flags=re.I)
+put_ok_tail = re.compile(r"%(end|else|do|mend|if|put|let|return|goto|abort)\b", re.I)
+for m in re.finditer(r"%put\b", masked_put, re.I):
+    seg_end = masked_put.find("\n", m.start())
+    if seg_end == -1:
+        seg_end = len(masked_put)
+    seg = masked_put[m.start():seg_end]
+    semi = seg.find(";")
+    if semi == -1:
+        continue  # %put terminator on a later line - out of scope
+    tail = seg[semi + 1:].strip()
+    if tail and not put_ok_tail.match(tail):
+        ln = masked_put.count("\n", 0, m.start()) + 1
+        errors.append(
+            f"line {ln}: raw ';' inside %put message text - the %put ends at that "
+            f"';' and the rest becomes stray tokens; write %str(;) or reword with '-'"
+        )
+
+# ---------- check 10: semicolons inside plain DATALINES data ----------
+# SAS ends a datalines;/cards; block at the FIRST semicolon anywhere in
+# the data (documented restriction). DATALINES4 (terminated by ';;;;')
+# exists precisely for semicolon-bearing data, e.g. WIF rule cells.
+dl_open = re.compile(r"^\s*(datalines|cards)\s*;\s*$", re.I)
+stripped_lines = stripped.split("\n")
+li = 0
+while li < len(stripped_lines):
+    if dl_open.match(stripped_lines[li]):
+        lj = li + 1
+        while lj < len(lines):
+            raw = lines[lj]
+            if ";" in raw:
+                if raw.strip() == ";":
+                    break  # clean terminator, no embedded semicolons
+                errors.append(
+                    f"line {lj + 1}: semicolon inside DATALINES data - SAS ends the "
+                    f"block at the FIRST ';' anywhere in the data; use datalines4 "
+                    f"with a ';;;;' terminator"
+                )
+                break
+            lj += 1
+        li = lj
+    li += 1
 
 print(f"== lint {path}: {len(lines)} lines, {len(macro_ranges)} macros ==")
 for e in errors:
