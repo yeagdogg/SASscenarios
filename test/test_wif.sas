@@ -412,8 +412,8 @@ data work.r_t05;
     infile datalines dsd dlm='|' truncover;
     input scenario :$32. hook :$32. seq verb :$8. where_clause :$2000. assign :$8000. options :$200.;
 datalines4;
-LINTBAD|T1|10|SET|region <> 'E'|premium = 0;|
-LINTBAD|T2|10|SET|policy_age between 20 and 30|premium = 0;|
+LINTBAD|T1|10|JOIN|region <> 'E'|premium = 0;|
+LINTBAD|T2|10|SET||premium = 0;|NOMATCH=FAIL
 LINTBAD|T3|10|SET||premium = &NOSUCHPARAM;|
 LINTBAD|T5|10|SET||run; delete;|
 LINTBAD|T6|10|FROB||x = 1;|
@@ -950,6 +950,467 @@ quit;
 %assert_true(flag=%eval(&syscc <= 4), id=T18b, desc=wif_report ran clean)
 %mend t18b_check;
 %t18b_check()
+
+/*==================================================================
+  T19  SET full-WHERE split: LIKE / BETWEEN / <> handled with real
+       WHERE semantics, order preserved
+==================================================================*/
+data work.r_t19;
+    length scenario $32 hook $32 seq 8 verb $8 where_clause $2000 assign $8000;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. where_clause :$2000. assign :$8000.;
+datalines4;
+SPLITT|POLICIES|10|SET|policy_age between 25 and 30|premium = premium + 1000;
+SPLITT|NEQ|10|SET|region <> 'E'|sched_mod = 9;
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=SPLITT, rules=work.r_t19, onfail=CONTINUE)
+proc sql noprint;
+    select count(*) into :t19x trimmed
+    from work.g_policies where 25 le policy_age le 30;
+quit;
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=OK, aff=&t19x, id=T19a,
+    desc=BETWEEN clause applied via the where-split path)
+data work.chk19;
+    merge work.policies(rename=(premium=prem_new))
+          work.g_policies(keep=pol_id policy_age premium);
+    by pol_id;
+    bad = 0;
+    if 25 le policy_age le 30 then do;
+        if prem_new ne premium + 1000 then bad = 1;
+    end;
+    else if prem_new ne premium then bad = 1;
+run;
+proc sql noprint;
+    select coalesce(sum(bad), 99) into :t19b trimmed from work.chk19;
+quit;
+%assert_true(flag=%eval(&t19b = 0), id=T19b, desc=only the BETWEEN rows changed)
+data work.ord19a;
+    set work.policies(keep=pol_id);
+run;
+data work.ord19b;
+    set work.g_policies(keep=pol_id);
+run;
+%assert_ds_equal(a=work.ord19a, b=work.ord19b, id=T19c,
+    desc=where-split preserves row order)
+%fresh(policies)
+%wif(policies, at=NEQ)
+%assert_log(hook=NEQ, seq=10, status=OK, aff=75, id=T19d,
+    desc=NE-angle operator means NOT-EQUAL under real WHERE semantics)
+%wif_off
+
+/*==================================================================
+  T20  JOIN preflight: typos caught BEFORE a rewrite
+==================================================================*/
+data work.r_t20;
+    length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41
+           columns $1000 assign $8000;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
+          columns :$1000. assign :$8000.;
+datalines4;
+JPF|POLICIES|10|JOIN|POL_ID|WORK.CARRY|NEW_MOD=SCHED_MOD|premiun = premium * 2;
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=JPF, rules=work.r_t20, onfail=CONTINUE)
+%put NOTE: [TEST] == negative block: the next JOIN is MEANT to fail its preflight ==;
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=FAILED, id=T20a,
+    desc=typo in the JOIN assign caught by the obs=0 preflight)
+%assert_ds_equal(a=work.policies, b=work.g_policies, id=T20b,
+    desc=preflighted JOIN never touched the target)
+%wif_off
+%let syscc = 0;
+
+/*==================================================================
+  T21  ASSERT: hooks as QA gates
+==================================================================*/
+data work.r_t21;
+    length scenario $32 hook $32 seq 8 verb $8 where_clause $2000;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. where_clause :$2000.;
+datalines4;
+QAT|POLICIES|10|ASSERT|premium > 0
+QAT|BADQA|10|ASSERT|sched_mod < 1
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=QAT, rules=work.r_t21, onfail=CONTINUE)
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=OK, aff=0, id=T21a,
+    desc=passing assertion logs OK with 0 violations)
+proc sql noprint;
+    select count(*) into :t21x trimmed
+    from work.g_policies where not (sched_mod < 1);
+quit;
+%put NOTE: [TEST] == negative block: the next ASSERT is MEANT to fail ==;
+%wif(policies, at=BADQA)
+%assert_log(hook=BADQA, seq=10, status=FAILED, aff=&t21x, id=T21b,
+    desc=failing assertion counts its violations)
+%_wif_nobs(ds=work.wif_viol, mvar=t21v)
+%assert_true(flag=%eval(&t21v = %sysfunc(min(&t21x, 200))), id=T21c,
+    desc=violation sample kept in work.wif_viol)
+%assert_ds_equal(a=work.policies, b=work.g_policies, id=T21d,
+    desc=ASSERT never modifies the table)
+%wif_off
+%let syscc = 0;
+
+/*==================================================================
+  T22  JOIN NOMATCH= policies
+==================================================================*/
+data work.r_t22;
+    length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41
+           columns $1000 options $200;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
+          columns :$1000. options :$200.;
+datalines4;
+NMT|POLICIES|10|JOIN|POL_ID|WORK.CARRY|NEW_MOD=SCHED_MOD|NOMATCH=DELETE
+NMT|FAILJ|10|JOIN|POL_ID|WORK.CARRY|NEW_MOD=SCHED_MOD|NOMATCH=FAIL
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=NMT, rules=work.r_t22, onfail=CONTINUE)
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=OK, aff=50, id=T22a,
+    desc=NOMATCH=DELETE matched 50 rows)
+proc sql noprint;
+    select count(*), coalesce(sum(mod(pol_id, 2) = 1), 0)
+        into :t22n trimmed, :t22odd trimmed
+        from work.policies;
+quit;
+%assert_true(flag=%eval(&t22n = 50 and &t22odd = 0), id=T22b,
+    desc=unmatched rows deleted and matched rows kept)
+%fresh(policies)
+%put NOTE: [TEST] == negative block: the next JOIN is MEANT to abort (NOMATCH=FAIL) ==;
+%wif(policies, at=FAILJ)
+%assert_log(hook=FAILJ, seq=10, status=FAILED, id=T22c,
+    desc=NOMATCH=FAIL aborts on the first unmatched row)
+%assert_ds_equal(a=work.policies, b=work.g_policies, id=T22d,
+    desc=aborted JOIN left the target byte-identical)
+%wif_off
+%let syscc = 0;
+
+/*==================================================================
+  T23  JOIN key renames (srckey=targetkey)
+==================================================================*/
+data work.carry2;
+    set work.carry(rename=(pol_id=pid));
+run;
+data work.r_t23;
+    length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41 columns $1000;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41. columns :$1000.;
+datalines4;
+KRT|POLICIES|10|JOIN|PID=POL_ID|WORK.CARRY2|NEW_MOD=SCHED_MOD
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=KRT, rules=work.r_t23, onfail=CONTINUE)
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=OK, aff=50, id=T23a,
+    desc=renamed key matched the 50 even pol_ids)
+proc sql noprint;
+    select count(*) into :t23b trimmed
+    from work.policies p, work.carry c
+    where p.pol_id = c.pol_id + 0 and mod(p.pol_id, 2) = 0
+      and round(p.sched_mod, .0001) ne round(c.new_mod, .0001);
+quit;
+%assert_true(flag=%eval(&t23b = 0), id=T23b,
+    desc=values pulled through the renamed key)
+%wif_off
+
+/*==================================================================
+  T24  SORT + DEDUPE (FIRST and LAST)
+==================================================================*/
+data work.g_hist;
+    length pol_id 8 eff 8 val 8;
+    do pol_id = 1 to 5;
+        do eff = 1 to 3;
+            val = eff;
+            output;
+        end;
+    end;
+run;
+data work.r_t24;
+    length scenario $32 hook $32 seq 8 verb $8 keys $200 options $200;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. keys :$200. options :$200.;
+datalines4;
+DDT|HIST|10|SORT|POL_ID DESCENDING EFF|
+DDT|HIST|20|DEDUPE|POL_ID|
+DDT|HISTL|10|SORT|POL_ID DESCENDING EFF|
+DDT|HISTL|20|DEDUPE|POL_ID|LAST
+;;;;
+run;
+data work.hist;
+    set work.g_hist;
+run;
+%wif_init(scenario=DDT, rules=work.r_t24, onfail=CONTINUE)
+%wif(hist)
+%assert_log(hook=HIST, seq=20, status=OK, aff=10, id=T24a,
+    desc=DEDUPE dropped the 10 non-latest rows)
+proc sql noprint;
+    select count(*), sum(val) into :t24n trimmed, :t24s trimmed from work.hist;
+quit;
+%assert_true(flag=%eval(&t24n = 5 and &t24s = 15), id=T24b,
+    desc=SORT desc + DEDUPE keeps the latest row per key)
+data work.hist;
+    set work.g_hist;
+run;
+%wif(hist, at=HISTL)
+proc sql noprint;
+    select count(*), sum(val) into :t24c trimmed, :t24d trimmed from work.hist;
+quit;
+%assert_true(flag=%eval(&t24c = 5 and &t24d = 5), id=T24c,
+    desc=the LAST option keeps the other end per key)
+%wif_off
+
+/*==================================================================
+  T25  SAVE with a parameterized destination
+==================================================================*/
+data work.r_t25;
+    length scenario $32 hook $32 seq 8 verb $8 source $41;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. source :$41.;
+datalines4;
+SAVET|POLICIES|10|SAVE|WORK.SV_&WIF_SCENARIO.
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=SAVET, rules=work.r_t25, onfail=CONTINUE)
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=OK, aff=100, id=T25a,
+    desc=SAVE logged the rows written)
+%assert_ds_equal(a=work.sv_savet, b=work.g_policies, id=T25b,
+    desc=snapshot written under the scenario-stamped name)
+%assert_ds_equal(a=work.policies, b=work.g_policies, id=T25c,
+    desc=SAVE never modifies the hooked table)
+%wif_off
+
+/*==================================================================
+  T26  APPEND NEWCOLS + no-WHERE fast path; then a clean wif_check
+==================================================================*/
+data work.r_t26;
+    length scenario $32 hook $32 seq 8 verb $8 source $41 columns $1000 options $200;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. source :$41. columns :$1000. options :$200.;
+datalines4;
+APPN|POLICIES|10|APPEND|WORK.SHOCK|AMT_GROSS=PREMIUM YR=SHOCK_YR|NEWCOLS
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=APPN, rules=work.r_t26, onfail=CONTINUE)
+%wif(policies)
+%assert_log(hook=POLICIES, seq=10, status=OK, aff=12, id=T26a,
+    desc=fast-path APPEND added all 12 shock rows)
+proc sql noprint;
+    select count(*) into :t26b trimmed
+    from dictionary.columns
+    where libname = 'WORK' and memname = 'POLICIES' and upcase(name) = 'SHOCK_YR';
+    select coalesce(sum(shock_yr is not null and pol_id <= 100), 99) into :t26c trimmed
+    from work.policies;
+quit;
+%assert_true(flag=%eval(&t26b = 1 and &t26c = 0), id=T26b,
+    desc=NEWCOLS column exists and is missing on the original rows)
+%wif_check(scope=GEN)
+%assert_true(flag=%eval(&WIF_RC = 0), id=T26c, desc=wif_check clean on a clean gen)
+%wif_off
+
+/*==================================================================
+  T27  SKIP_FAIL logging + wif_check catches a dirty gen
+==================================================================*/
+data work.r_t27;
+    length scenario $32 hook $32 seq 8 verb $8 keys $200 source $41
+           columns $1000 assign $8000;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. keys :$200. source :$41.
+          columns :$1000. assign :$8000.;
+datalines4;
+SKF|POLICIES|10|JOIN|POL_ID|WORK.NO_SUCH_SRC|X=Y|
+SKF|POLICIES|20|SET||||premium = 0;
+;;;;
+run;
+%fresh(policies)
+%wif_init(scenario=SKF, rules=work.r_t27, onfail=CONTINUE)
+%put NOTE: [TEST] == negative block: the next hook is MEANT to fail and skip its second rule ==;
+%wif(policies)
+%get_log(hook=POLICIES, seq=20)
+%assert_true(flag=%eval("&TL_STATUS" = "SKIP_FAIL"), id=T27a,
+    desc=rules after a failure are logged SKIP_FAIL)
+%wif_check(scope=GEN)
+%assert_true(flag=%eval(&WIF_RC = 1), id=T27b,
+    desc=wif_check flags the dirty gen)
+%wif_off
+%let syscc = 0;
+
+/*==================================================================
+  T28  wif_status + auto-deactivate + wif_reset
+==================================================================*/
+data work.r_t28;
+    length scenario $32 hook $32 seq 8 verb $8 assign $8000;
+    infile datalines dsd dlm='|' truncover;
+    input scenario :$32. hook :$32. seq verb :$8. assign :$8000.;
+datalines4;
+STAT|POLICIES|10|SET|premium = premium + 1;
+;;;;
+run;
+%wif_init(scenario=STAT, rules=work.r_t28, onfail=CONTINUE)
+%wif_status
+%macro t28_check1();
+%assert_true(flag=%eval(&syscc <= 4 and &WIF_ACTIVE = 1), id=T28a,
+    desc=wif_status runs clean while active)
+%mend t28_check1;
+%t28_check1()
+proc datasets lib=work nolist nowarn; delete _wif_rules; quit;
+%fresh(policies)
+%wif(policies)
+%assert_true(flag=%eval(&WIF_ACTIVE = 0), id=T28b,
+    desc=hooks auto-deactivate when the rules dataset vanished)
+%wif_reset
+data work.t28probe;
+    do i = 1 to 10;
+        output;
+    end;
+run;
+proc sql noprint;
+    select count(*) into :t28c trimmed from work.t28probe;
+quit;
+%assert_true(flag=%eval(&WIF_ACTIVE = 0 and &WIF_RC = 0 and &syscc = 0 and &t28c = 10),
+    id=T28c, desc=wif_reset leaves a sane session)
+
+/*==================================================================
+  T29  wif_run code= (macro-wrapped program, no server file needed)
+==================================================================*/
+%macro wr_prog();
+data work.runin;
+    set work.g_runin;
+run;
+%wif(runin)
+data work.runout;
+    set work.runin;
+    out_prem = premium;
+run;
+%mend wr_prog;
+%wif_run(scenario=UP, code=wr_prog, rules=work.r_t15, keep=runout,
+         onfail=CONTINUE)
+proc sql noprint;
+    select coalesce(sum(out_prem), 0) into :t29a trimmed from work.up_runout;
+quit;
+%assert_true(flag=%eval(&t29a = 1100), id=T29a,
+    desc=wif_run code= ran the macro-wrapped program)
+%assert_true(flag=%eval(&WIF_ACTIVE = 0), id=T29b, desc=code= run ended clean)
+
+/*==================================================================
+  T30  autohook: fixture program in, suggested copy + report out
+==================================================================*/
+%include "&WIF_HOME/tools/wif_autohook.sas";
+data _null_;
+    file "&TROOT/main/ah_fixture.sas" lrecl=500;
+    put 'data work.alpha;';
+    put '    x = 1;';
+    put 'run;';
+    put '%wif(alpha)';
+    put 'data work.beta;';
+    put '    y = 1;';
+    put 'run;';
+    put 'proc sql;';
+    put '    create table work.gamma as select * from work.beta;';
+    put 'quit;';
+    put 'data work.dup1; a = 1; run;';
+    put 'data work.dup2;';
+    put '    b = 2;';
+    put 'run;';
+    put 'data work.dup2;';
+    put '    b = 3;';
+    put 'run;';
+    put 'proc sort data=work.beta out=work.beta_s;';
+    put '    by y;';
+    put 'run;';
+    put 'proc means data=work.beta_s noprint;';
+    put '    var y;';
+    put '    output out=work.stats mean=;';
+    put 'run;';
+    put 'data perm.zed;';
+    put '    z = 1;';
+    put 'run;';
+    put '%macro inner();';
+    put 'data work.inmac; m = 1; run;';
+    put '%mend inner;';
+    put 'data work.v1 / view=work.v1;';
+    put '    set work.beta;';
+    put 'run;';
+run;
+%wif_autohook(main=&TROOT/main/ah_fixture.sas,
+              out=&TROOT/main/ah_fixture_hooked.sas)
+proc sql noprint;
+    select coalesce(sum(action = 'INSERT'), 99) into :t30i trimmed
+    from work.wif_autohook;
+    select coalesce(sum(action = 'SKIP'), 99) into :t30s trimmed
+    from work.wif_autohook;
+    select count(*) into :t30d trimmed
+    from work.wif_autohook
+    where action = 'SKIP' and index(paste, 'at=DUP2_L') > 0;
+quit;
+%assert_true(flag=%eval(&t30i = 4), id=T30a,
+    desc=autohook inserted exactly beta gamma beta_s stats [got &t30i])
+%assert_true(flag=%eval(&t30d = 2), id=T30b,
+    desc=duplicate-site table got two paste-ready at= suggestions)
+%assert_true(flag=%eval(%sysfunc(fileexist(&TROOT/main/ah_fixture_hooked.sas)) = 1),
+    id=T30c, desc=suggested copy written)
+data work.t30hooks;
+    infile "&TROOT/main/ah_fixture_hooked.sas" lrecl=500 truncover;
+    input line $500.;
+    if index(line, '25'x || 'wif(') = 1;
+run;
+proc sql noprint;
+    select count(*) into :t30h trimmed from work.t30hooks;
+quit;
+%assert_true(flag=%eval(&t30h = 5), id=T30d,
+    desc=copy holds the original hook plus the 4 inserted ones [got &t30h])
+
+/*==================================================================
+  T31  wif_compare digest
+==================================================================*/
+data work.b1_out;
+    do pol_id = 1 to 10;
+        prem = 100;
+        output;
+    end;
+run;
+data work.s1_out;
+    set work.b1_out;
+    if pol_id <= 3 then prem = 110;
+    if pol_id = 10 then delete;
+run;
+data work.s1_out;
+    set work.s1_out end=_e;
+    output;
+    if _e then do;
+        pol_id = 99; prem = 100;
+        output;
+    end;
+run;
+%wif_compare(base=B1, scen=S1, tables=OUT, keys=pol_id, lib=work, print=N)
+proc sql noprint;
+    select nobs_base, nobs_scen, only_base, only_scen, changed_rows
+        into :t31nb trimmed, :t31ns trimmed, :t31ob trimmed,
+             :t31os trimmed, :t31ch trimmed
+        from work.wif_compare where table = 'OUT';
+    select round(sum_base), round(sum_scen)
+        into :t31sb trimmed, :t31ss trimmed
+        from work.wif_compare_cols where table = 'OUT' and column = 'PREM';
+quit;
+%assert_true(flag=%eval(&t31nb = 10 and &t31ns = 10 and &t31ob = 1 and &t31os = 1
+                        and &t31ch = 3), id=T31a,
+    desc=table digest: counts orphans and changed rows [&t31nb &t31ns &t31ob &t31os &t31ch])
+/* the column digest covers KEY-MATCHED rows (9 here); orphans are
+   counted separately in the table digest                            */
+%assert_true(flag=%eval(&t31sb = 900 and &t31ss = 930), id=T31b,
+    desc=column digest over matched rows: premium 900 -> 930 [&t31sb &t31ss])
 
 /*------------------------------------------------------------------
   Tally

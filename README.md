@@ -29,15 +29,20 @@ A rule row says what happens at a hook:
 | RENEWAL | GUIDANCE_100 | JOIN | keys `POL_ID`, source `WORK.CARRY`, map `PRIOR_MOD=EXPIRING_MOD`, `ITERS=2+` |
 | MKTADJ | RATED | JOIN | keys `NAICS LOB STATE`, source `WORK.MKT_ADJ`, pull `ADJ_FACTOR`, compute `rate = rate * adj_factor;` |
 
-Verbs: **SET** (in-place assignments, preflighted against a zero-row copy so
-typos never touch your data), **JOIN** (order-preserving hash left-join +
-same-pass computed columns — the bulk-what-if workhorse), **FILTER**,
-**APPEND**, **REPLACE**, **CODE** (verbatim escape hatch), **LET**
-(parameters). Raw permanent inputs are handled by `hook=INPUT` rules
-applied to **staged copies** behind a readonly-nested libref — base data is
-physically untouchable. Every application is logged to `work.wif_log` with
-rows before/after/affected, and the exact generated code is kept under
-`WORK/wif_gen/`.
+Verbs: **SET** (in-place assignments; full WHERE syntax handled; preflighted
+against a zero-row copy so typos never touch your data), **JOIN**
+(order-preserving hash left-join + same-pass computed columns, key renames,
+`NOMATCH=KEEP|FAIL|DELETE`, preflighted — the bulk-what-if workhorse),
+**FILTER**, **APPEND**, **REPLACE**, **ASSERT** (QA gate: fail loudly with a
+violation sample — "no missing rate after the adjustment join"), **SAVE**
+(mid-program snapshot), **SORT**, **DEDUPE**, **CODE** (verbatim escape
+hatch), **LET** (parameters). Raw permanent inputs are handled by
+`hook=INPUT` rules applied to **staged copies** behind a readonly-nested
+libref — base data is physically untouchable. Every application is logged to
+`work.wif_log`; `%wif_status` shows the state at a glance, `%wif_check`
+gates batch runs, `%wif_reset` un-wedges anything, and
+`%wif_compare(base=, scen=, ...)` digests scenario-vs-baseline outputs
+(total premium moved, changed rows by key).
 
 Multi-run sweeps and renewal/CLV loops are one `%do` loop in a driver —
 see `examples/`. Because rules are data, scenario grids can be **generated
@@ -48,12 +53,14 @@ programmatically** (a data step emitting SHOCK_001…SHOCK_100).
 | path | what it is |
 |---|---|
 | `wif.sas` | the whole kernel — one `%include` |
+| `QUICKSTART.md` | the 30-minute first-Monday path |
 | `template/wif_workbook.xlsx` | rules workbook template (README + RULES sheets) |
 | `test/test_wif.sas` | self-contained test suite (runs entirely under WORK) |
 | `examples/wif_driver_example.sas` | the file you open in EG |
 | `examples/clv_loop_example.sas` | N-year renewal / CLV loop driver |
 | `docs/WIF_GUIDE.md` | the manual: hook placement rules, verbs, authoring, staging, troubleshooting |
-| `tools/lint_sas.py` | dev-side linter — checks `%wif()` hook placement too |
+| `tools/wif_autohook.sas` | writes a SUGGESTED hooked copy of your program + a site-by-site report |
+| `tools/lint_sas.py` | dev-side linter — checks `%wif()` hook placement, `%put` semicolons, DATALINES traps |
 | `tools/make_wif_workbook.py` | regenerates the workbook template |
 | `archive/sqf/` | the earlier whole-program wrapper framework (frozen, working) — durable per-run audit folders, run registry, chains |
 

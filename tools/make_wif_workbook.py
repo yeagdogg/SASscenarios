@@ -48,7 +48,8 @@ rows = [
     ("B", "             at %wif_init time, via staged copies - the base folder is never touched)."),
     ("B", "  seq        order within the hook (10, 20, 30 ... leave blank for sheet order)."),
     ("B", "  active     Y/N. N rows are ignored."),
-    ("B", "  verb       SET / JOIN / FILTER / APPEND / REPLACE / CODE / LET (reference below)."),
+    ("B", "  verb       SET / JOIN / FILTER / APPEND / REPLACE / CODE / ASSERT / SAVE /"),
+    ("B", "             SORT / DEDUPE / LET (reference below)."),
     ("B", "  target     usually BLANK = the hooked table itself. INPUT rules need libref.table."),
     ("B", "  where_clause  row condition. SET/JOIN: IF syntax (in, =:, missing(), date literals);"),
     ("B", "             FILTER/APPEND: full WHERE syntax (LIKE, BETWEEN, IS MISSING ...)."),
@@ -58,6 +59,7 @@ rows = [
     ("B", "             between. JOIN with columns blank = update same-named columns."),
     ("B", "  assign     SET/JOIN: SAS assignment statements. CODE: the code. LET: the value."),
     ("B", "  options    ONCE  ITERS=1|2+|ALL  NEWCOLS  NOWARN0  DROP  KEEPEXTRA  ALLOWLIB"),
+    ("B", "             LAST (DEDUPE)  NOMATCH=KEEP|FAIL|DELETE (JOIN)"),
     ("B", "  notes      free text for humans."),
     ("B", ""),
     ("H", "Verb reference"),
@@ -69,6 +71,11 @@ rows = [
     ("B", "  APPEND   add the source's rows (where_clause filters the SOURCE)."),
     ("B", "  REPLACE  swap the whole table for the source (trimmed to the target's columns"),
     ("B", "           unless KEEPEXTRA)."),
+    ("B", "  ASSERT   QA gate, never modifies: where_clause = the condition EVERY row must"),
+    ("B", "           satisfy (full WHERE). Violations -> FAILED + sample in work.wif_viol."),
+    ("B", "  SAVE     snapshot the hooked table; the DESTINATION goes in the source column"),
+    ("B", "           (parameters fine: RESULTS.SNAP_&WIF_SCENARIO.)."),
+    ("B", "  SORT     keys with DESCENDING allowed.   DEDUPE  keep FIRST (or LAST) per keys."),
     ("B", "  CODE     escape hatch: the assign cell is inlined verbatim as generated code."),
     ("B", "           You may reference the live built-ins WIF_TABLE / WIF_HOOK there."),
     ("B", "  LET      define a parameter: target = its name, assign = its value. Rows with a"),
@@ -154,7 +161,8 @@ for j, (name, _) in enumerate(COLS, 1):
         ws.cell(row=i, column=j).number_format = "@"
 
 dv_verb = DataValidation(
-    type="list", formula1='"SET,JOIN,FILTER,APPEND,REPLACE,CODE,LET"',
+    type="list",
+    formula1='"SET,JOIN,FILTER,APPEND,REPLACE,CODE,ASSERT,SAVE,SORT,DEDUPE,LET"',
     allow_blank=True, showErrorMessage=False)
 dv_act = DataValidation(
     type="list", formula1='"Y,N"', allow_blank=True, showErrorMessage=False)

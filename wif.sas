@@ -44,7 +44,7 @@
 %if %length(&WIF_ONFAIL)  = 0 %then %let WIF_ONFAIL  = STOP;
 %if %length(&WIF_MAXHASH) = 0 %then %let WIF_MAXHASH = 500000000;
 %if %length(&WIF_RC)      = 0 %then %let WIF_RC      = 0;
-%let WIF_VERSION = 1.0.1;
+%let WIF_VERSION = 1.1.0;
 %put NOTE: [WIF] wif.sas v&WIF_VERSION compiled. WIF_ACTIVE=&WIF_ACTIVE..;
 %mend _wif_bootstrap;
 
@@ -100,7 +100,7 @@
             %else %let _parent = %qsubstr(&_cur, 1, &_pl);
             %let _seg = %sysfunc(dcreate(&_seg, &_parent));
             %if not %sysfunc(fileexist(&_cur)) %then %do;
-                %put ERROR: [WIF] Could not create directory: &_cur;
+                %put ERROR: [WIF] Could not create directory: &_cur (check write permission - and that the path is the SAS SERVER%str(%')s, not your PC%str(%')s).;
                 %let WIF_UTILRC = 1;
                 %return;
             %end;
@@ -214,7 +214,7 @@ options obs=max replace nosyntaxcheck;
 data work._wif_log_new;
     length gen 8 scenario $32 iter 8 fire 8 hook $32 seq 8 verb $8
            target $41 status $12 rows_before 8 rows_after 8
-           rows_affected 8 message $300 logged_at 8;
+           rows_affected 8 message $500 logged_at 8;
     format logged_at datetime20.;
     gen = &WIF_GEN; scenario = "&WIF_SCENARIO"; iter = &WIF_ITER;
     fire = &WIF_FIRE; hook = "&hook"; seq = &seq; verb = "&verb";
@@ -395,7 +395,7 @@ libname _wifxl xlsx "&_f";
     %end;
     libname _wifxl clear;
     %if &_ok = 0 %then %do;
-        %let WIF_MSG = Workbook has no sheet named RULES.;
+        %let WIF_MSG = Workbook has no sheet named RULES. Rename the sheet to RULES, or start from template/wif_workbook.xlsx.;
         %_wif_lerr(sev=E, field=RULES)
     %end;
 %end;
@@ -439,7 +439,7 @@ libname _wifxl xlsx "&_f";
 %end;
 %else %do;
     %if not %sysfunc(exist(&_r)) %then %do;
-        %let WIF_MSG = Rules dataset &_r not found.;
+        %let WIF_MSG = Rules dataset &_r not found. Check the name (LIBREF.DATASET) and that the step creating it ran in THIS session.;
         %_wif_lerr(sev=E, field=RULES)
         %return;
     %end;
@@ -905,16 +905,18 @@ proc datasets lib=work nolist nowarn; delete _wif_scanerr _wif_scanerr2; quit;
 data work._wif_rules(keep=scenario hook seq active verb target where_clause
                           keys source columns assign options notes where_ops
                           opt_once opt_iters opt_newcols opt_nowarn0 opt_drop
-                          opt_keepextra opt_allowlib has_where has_assign has_cols)
+                          opt_keepextra opt_allowlib opt_last opt_nomatch
+                          has_where has_assign has_cols)
      work._wif_ckerr(keep=sev hook seq field message);
     length sev $1 field $32 message $500
            opt_once opt_newcols opt_nowarn0 opt_drop opt_keepextra
-           opt_allowlib 8 opt_iters $8
+           opt_allowlib opt_last 8 opt_iters $8 opt_nomatch $6
            has_where has_assign has_cols 8
            _wif_t _wif_t2 $200 _wif_n $41 _wif_p1 _wif_p2 $32;
     set work._wif_rules;
     opt_once = 0; opt_newcols = 0; opt_nowarn0 = 0; opt_drop = 0;
-    opt_keepextra = 0; opt_allowlib = 0; opt_iters = 'ALL';
+    opt_keepextra = 0; opt_allowlib = 0; opt_last = 0;
+    opt_iters = 'ALL'; opt_nomatch = 'KEEP';
     has_where  = (lengthn(where_clause) > 0);
     has_assign = (lengthn(assign) > 0);
     has_cols   = (lengthn(columns) > 0);
@@ -935,10 +937,11 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
     end;
 
     /* ---- verb ---- */
-    if verb not in ('SET','JOIN','FILTER','APPEND','REPLACE','CODE') then do;
+    if verb not in ('SET','JOIN','FILTER','APPEND','REPLACE','CODE',
+                    'ASSERT','SAVE','SORT','DEDUPE') then do;
         sev='E'; field='VERB';
         message=catx(' ', 'Unknown verb:', verb,
-                     '- use SET, JOIN, FILTER, APPEND, REPLACE, CODE or LET.');
+                     '- use SET JOIN FILTER APPEND REPLACE CODE ASSERT SAVE SORT DEDUPE or LET.');
         output work._wif_ckerr;
     end;
 
@@ -970,10 +973,20 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
                 output work._wif_ckerr;
             end;
         end;
+        else if _wif_t = 'LAST' then opt_last = 1;
+        else if _wif_t =: 'NOMATCH=' then do;
+            opt_nomatch = strip(substr(_wif_t, 9));
+            if opt_nomatch not in ('KEEP','FAIL','DELETE') then do;
+                sev='E'; field='OPTIONS';
+                message=catx(' ', 'Bad NOMATCH= value:', opt_nomatch,
+                             '- use NOMATCH=KEEP, NOMATCH=FAIL or NOMATCH=DELETE.');
+                output work._wif_ckerr;
+            end;
+        end;
         else do;
             sev='E'; field='OPTIONS';
             message=catx(' ', 'Unknown option token:', _wif_t,
-                         '- known: ONCE ITERS= NEWCOLS NOWARN0 DROP KEEPEXTRA ALLOWLIB.');
+                         '- known: ONCE ITERS= NEWCOLS NOWARN0 DROP KEEPEXTRA ALLOWLIB LAST NOMATCH=.');
             output work._wif_ckerr;
         end;
     end;
@@ -987,9 +1000,24 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
         message='KEEPEXTRA applies to REPLACE rules only.';
         output work._wif_ckerr;
     end;
-    if opt_newcols = 1 and verb not in ('SET','JOIN') then do;
+    if opt_newcols = 1 and verb not in ('SET','JOIN','APPEND') then do;
         sev='E'; field='OPTIONS';
-        message='NEWCOLS applies to SET and JOIN rules only.';
+        message='NEWCOLS applies to SET, JOIN and APPEND rules only.';
+        output work._wif_ckerr;
+    end;
+    if opt_last = 1 and verb ne 'DEDUPE' then do;
+        sev='E'; field='OPTIONS';
+        message='LAST applies to DEDUPE rules only.';
+        output work._wif_ckerr;
+    end;
+    if opt_nomatch ne 'KEEP' and verb ne 'JOIN' then do;
+        sev='E'; field='OPTIONS';
+        message='NOMATCH= applies to JOIN rules only.';
+        output work._wif_ckerr;
+    end;
+    if opt_nowarn0 = 1 and verb = 'ASSERT' then do;
+        sev='E'; field='OPTIONS';
+        message='NOWARN0 does not apply to ASSERT (zero violations IS the passing outcome).';
         output work._wif_ckerr;
     end;
 
@@ -1005,11 +1033,9 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
             message='SET uses where_clause + assign only; source/keys/columns must be blank.';
             output work._wif_ckerr;
         end;
-        if has_where and where_ops = 'Y' then do;
-            sev='E'; field='WHERE_CLAUSE';
-            message='SET where clauses use IF syntax. Rewrite: BETWEEN a AND b as (a <= x and x <= b); LIKE as index()/(=:) prefix; IS MISSING as missing(x); <> as ne (in IF context <> means MAX, silently wrong).';
-            output work._wif_ckerr;
-        end;
+        /* where_ops='Y' is fine for SET: codegen auto-routes to the
+           order-preserving WHERE-split path, where LIKE/BETWEEN/
+           IS MISSING work and <> means NE (real WHERE semantics)     */
     end;
     else if verb = 'JOIN' then do;
         if lengthn(keys) = 0 then do;
@@ -1076,6 +1102,54 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
             output work._wif_ckerr;
         end;
     end;
+    else if verb = 'ASSERT' then do;
+        if not has_where then do;
+            sev='E'; field='WHERE_CLAUSE';
+            message='ASSERT needs a where_clause stating the condition EVERY row must satisfy (full WHERE syntax allowed). Rows failing it are violations.';
+            output work._wif_ckerr;
+        end;
+        if lengthn(source) > 0 or lengthn(keys) > 0 or has_cols or has_assign then do;
+            sev='E'; field='SOURCE';
+            message='ASSERT uses where_clause only; source/keys/columns/assign must be blank.';
+            output work._wif_ckerr;
+        end;
+    end;
+    else if verb = 'SAVE' then do;
+        if lengthn(source) = 0 then do;
+            sev='E'; field='SOURCE';
+            message='SAVE needs the DESTINATION dataset name in the source column (parameters allowed, e.g. a scenario-stamped name).';
+            output work._wif_ckerr;
+        end;
+        if has_where or lengthn(keys) > 0 or has_cols or has_assign then do;
+            sev='E'; field='WHERE_CLAUSE';
+            message='SAVE uses the source column only (as the destination); where/keys/columns/assign must be blank.';
+            output work._wif_ckerr;
+        end;
+    end;
+    else if verb = 'SORT' then do;
+        if lengthn(keys) = 0 then do;
+            sev='E'; field='KEYS';
+            message='SORT needs key variables in the keys column (DESCENDING before a name is allowed).';
+            output work._wif_ckerr;
+        end;
+        if has_where or lengthn(source) > 0 or has_cols or has_assign then do;
+            sev='E'; field='WHERE_CLAUSE';
+            message='SORT uses keys only; where/source/columns/assign must be blank.';
+            output work._wif_ckerr;
+        end;
+    end;
+    else if verb = 'DEDUPE' then do;
+        if lengthn(keys) = 0 then do;
+            sev='E'; field='KEYS';
+            message='DEDUPE needs key variables in the keys column (plain names; add the LAST option to keep the last row per key).';
+            output work._wif_ckerr;
+        end;
+        if has_where or lengthn(source) > 0 or has_cols or has_assign then do;
+            sev='E'; field='WHERE_CLAUSE';
+            message='DEDUPE uses keys (plus the LAST option) only; where/source/columns/assign must be blank.';
+            output work._wif_ckerr;
+        end;
+    end;
 
     /* ---- name syntax: target / source / keys / columns ---- */
     if lengthn(target) > 0 then do;
@@ -1098,7 +1172,7 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
             output work._wif_ckerr;
         end;
     end;
-    if lengthn(source) > 0 and verb in ('JOIN','APPEND','REPLACE') then do;
+    if lengthn(source) > 0 and verb in ('JOIN','APPEND','REPLACE','SAVE') then do;
         _wif_n = source; link cknm2;
         if _wif_ok = 0 then do;
             sev='E'; field='SOURCE';
@@ -1107,6 +1181,19 @@ data work._wif_rules(keep=scenario hook seq active verb target where_clause
         end;
     end;
     if verb = 'JOIN' then do _wif_i = 1 to countw(keys, ' ');
+        _wif_t = scan(keys, _wif_i, ' ');
+        _wif_p1 = scan(_wif_t, 1, '=');
+        _wif_p2 = scan(_wif_t, 2, '=');
+        if countc(_wif_t, '=') > 1
+           or not nvalid(strip(_wif_p1), 'v7')
+           or (countc(_wif_t, '=') = 1 and not nvalid(strip(_wif_p2), 'v7')) then do;
+            sev='E'; field='KEYS';
+            message=catx(' ', 'Bad keys token:', _wif_t,
+                         '- use key or srckey=targetkey, space-separated.');
+            output work._wif_ckerr;
+        end;
+    end;
+    else if verb in ('SORT','DEDUPE') then do _wif_i = 1 to countw(keys, ' ');
         if not nvalid(strip(scan(keys, _wif_i, ' ')), 'v7') then do;
             sev='E'; field='KEYS';
             message=catx(' ', 'Invalid key variable name:', scan(keys, _wif_i, ' '));
@@ -1294,6 +1381,8 @@ data _null_;
     length _sby _lbl $200 _dsopt $600 _atxt $8200;
     length _klist $200 _dlist _keeps _rens _cols $32767 _qk _qd $4000
            _msrc _mtgt _expn $32767 _w2 $32 _tok $200 _s1 _t1 $32;
+    length _jto $41 _jfrom0 $12 _jhash0 $8 _jdsopt $600;
+    length _kkeep $200 _kput $500 _ddso $600;
 
     /* ---------- prep: introspect FROM (and SRC when relevant) ----- */
     _fid = open("&from", 'i');
@@ -1319,6 +1408,17 @@ data _null_;
     if _perr = 0 and verb = 'JOIN' then link jprep;
     if _perr = 0 and verb = 'APPEND' then link aprep;
     if _perr = 0 and verb = 'REPLACE' then link rprep;
+    if _perr = 0 and verb = 'SET' then do;
+        if has_where = 1 and where_ops = 'Y' then do;
+            /* the split path tags rows with _WIF_SEQ_                */
+            if varnum(_fid, '_WIF_SEQ_') > 0 then do;
+                _perr = 1;
+                _pmsg = "&from already has a column named _WIF_SEQ_ - the _wif_ name prefix is reserved by WIF.";
+            end;
+        end;
+    end;
+    if _perr = 0 and verb in ('SORT', 'DEDUPE') then link kprep;
+    if _perr = 0 and verb = 'SAVE' then link vprep;
 
     /* assignment text: normalize the terminal semicolon             */
     _atxt = strip(assign);
@@ -1329,7 +1429,9 @@ data _null_;
     /* output dataset options (order-preserving verbs re-assert sort
        flag + label; APPEND breaks sort order; REPLACE takes source) */
     _dsopt = ' ';
-    if "&compress" = '1' then _dsopt = 'compress=yes';
+    /* binary compression: actuarial tables are numeric-heavy, where
+       RLE (compress=yes) does little and binary does well           */
+    if "&compress" = '1' then _dsopt = 'compress=binary';
     if verb in ('SET', 'JOIN', 'FILTER') then do;
         if lengthn(_sby) > 0 then do;
             /* re-assert the sort flag ONLY when the rule provably does
@@ -1379,89 +1481,115 @@ data _null_;
     _l = "/* target: &to   scenario: " || strip(symget('WIF_SCENARIO')) || ' */'; link pl;
 
     if "&mode" = 'PF' then do;
-        /* SET preflight: compile + run the assignments against zero
-           rows; a typo'd column shows up in work._wif_pf, a syntax
-           error fails here -- the real table is never touched       */
-        _l = 'data work._wif_pf;'; link pl;
-        _l = "    set &from(obs=0);"; link pl;
-        if has_where = 1 then do;
-            _l = '    if (' || strip(where_clause) || ') then do;'; link pl;
+        if verb = 'JOIN' then do;
+            /* JOIN preflight: the same hash join against zero rows on
+               BOTH sides. It compiles the mapping and the assign cell
+               and creates the definedata host variables, so the
+               column check catches typos before any data moves.     */
+            _jto = 'work._wif_pf';
+            _jfrom0 = '(obs=0)';
+            _jhash0 = 'obs=0 ';
+            _jcnt = 0;
+            _jdsopt = ' ';
+            link jemit;
         end;
-        if lengthn(_atxt) > 0 then do;
-            _l = '    ' || strip(_atxt); link pl;
+        else do;
+            /* SET preflight: compile + run the rule against zero
+               rows; a typo'd column shows up in work._wif_pf, a
+               syntax error fails here -- the table is never touched */
+            _l = 'data work._wif_pf;'; link pl;
+            _l = "    set &from(obs=0);"; link pl;
+            if has_where = 1 then do;
+                if where_ops = 'Y' then do;
+                    /* validate under REAL WHERE parsing, exactly as
+                       the split path will run it                     */
+                    _l = '    where (' || strip(where_clause) || ');'; link pl;
+                    if lengthn(_atxt) > 0 then do;
+                        _l = '    ' || strip(_atxt); link pl;
+                    end;
+                end;
+                else do;
+                    _l = '    if (' || strip(where_clause) || ') then do;'; link pl;
+                    if lengthn(_atxt) > 0 then do;
+                        _l = '    ' || strip(_atxt); link pl;
+                    end;
+                    _l = '    end;'; link pl;
+                end;
+            end;
+            else if lengthn(_atxt) > 0 then do;
+                _l = '    ' || strip(_atxt); link pl;
+            end;
+            _l = 'run;'; link pl;
         end;
-        if has_where = 1 then do;
-            _l = '    end;'; link pl;
-        end;
-        _l = 'run;'; link pl;
     end;
 
     else if verb = 'SET' then do;
-        _l = _pc || 'put NOTE: [WIF] SET seq ' || strip(put(seq, best8.-l))
-             || " on &to (hook " || strip(hook) || ');'; link pl;
-        _l = "data &to(" || strip(_dsopt) || ' drop=_wif_naff _wif_hit);'; link pl;
-        _l = "    set &from end=_wif_eof;"; link pl;
-        _l = '    retain _wif_naff 0;'; link pl;
-        _l = '    _wif_hit = 0;'; link pl;
-        if has_where = 1 then do;
-            _l = '    if (' || strip(where_clause) || ') then do;'; link pl;
-            _l = '        ' || strip(_atxt); link pl;
-            _l = '        _wif_hit = 1;'; link pl;
-            _l = '    end;'; link pl;
+        if has_where = 1 and where_ops = 'Y' then do;
+            /* WHERE-only operators (LIKE / BETWEEN / IS MISSING / <>
+               as NE): order-preserving split under REAL WHERE
+               semantics. Four passes - prefer IF-syntax clauses on
+               very large tables.                                     */
+            _l = _pc || 'put NOTE: [WIF] SET seq ' || strip(put(seq, best8.-l))
+                 || " on &to (hook " || strip(hook) || ', where-split);'; link pl;
+            _l = 'data work._wif_all;'; link pl;
+            _l = "    set &from;"; link pl;
+            _l = '    _wif_seq_ = _n_;'; link pl;
+            _l = 'run;'; link pl;
+            _l = 'data work._wif_m;'; link pl;
+            _l = '    set work._wif_all;'; link pl;
+            _l = '    where (' || strip(where_clause) || ');'; link pl;
+            _l = '    ' || strip(_atxt); link pl;
+            _l = 'run;'; link pl;
+            _l = 'data work._wif_u;'; link pl;
+            _l = '    set work._wif_all;'; link pl;
+            _l = '    where not (' || strip(where_clause) || ');'; link pl;
+            _l = 'run;'; link pl;
+            if lengthn(_dsopt) > 0 then
+                _l = "data &to(" || strip(_dsopt) || ' drop=_wif_seq_);';
+            else _l = "data &to(drop=_wif_seq_);";
+            link pl;
+            _l = '    set work._wif_m work._wif_u;'; link pl;
+            _l = '    by _wif_seq_;'; link pl;
+            _l = 'run;'; link pl;
+            _l = 'data _null_;'; link pl;
+            _l = '    if 0 then set work._wif_m nobs=_wif_n;'; link pl;
+            _l = "    call symputx('WIF_AFF', _wif_n, 'G');"; link pl;
+            _l = '    stop;'; link pl;
+            _l = 'run;'; link pl;
+            _l = 'proc datasets lib=work nolist nowarn; delete _wif_all _wif_m _wif_u; quit;'; link pl;
         end;
         else do;
-            _l = '    ' || strip(_atxt); link pl;
-            _l = '    _wif_hit = 1;'; link pl;
+            _l = _pc || 'put NOTE: [WIF] SET seq ' || strip(put(seq, best8.-l))
+                 || " on &to (hook " || strip(hook) || ');'; link pl;
+            _l = "data &to(" || strip(_dsopt) || ' drop=_wif_naff _wif_hit);'; link pl;
+            _l = "    set &from end=_wif_eof;"; link pl;
+            _l = '    retain _wif_naff 0;'; link pl;
+            _l = '    _wif_hit = 0;'; link pl;
+            if has_where = 1 then do;
+                _l = '    if (' || strip(where_clause) || ') then do;'; link pl;
+                _l = '        ' || strip(_atxt); link pl;
+                _l = '        _wif_hit = 1;'; link pl;
+                _l = '    end;'; link pl;
+            end;
+            else do;
+                _l = '    ' || strip(_atxt); link pl;
+                _l = '    _wif_hit = 1;'; link pl;
+            end;
+            _l = '    _wif_naff + _wif_hit;'; link pl;
+            _l = "    if _wif_eof then call symputx('WIF_AFF', _wif_naff, 'G');"; link pl;
+            _l = 'run;'; link pl;
         end;
-        _l = '    _wif_naff + _wif_hit;'; link pl;
-        _l = "    if _wif_eof then call symputx('WIF_AFF', _wif_naff, 'G');"; link pl;
-        _l = 'run;'; link pl;
     end;
 
     else if verb = 'JOIN' then do;
         _l = _pc || 'put NOTE: [WIF] JOIN seq ' || strip(put(seq, best8.-l))
              || " on &to from " || strip(source) || ';'; link pl;
-        _l = "data &to(" || strip(_dsopt) || ' drop=_wif_rc _wif_naff);'; link pl;
-        _l = "    if 0 then set &from;"; link pl;
-        _l = '    if 0 then set ' || strip(source) || '(keep=' || strip(_klist)
-             || ' ' || strip(_keeps); link pl;
-        if lengthn(_rens) > 0 then do;
-            _l = '        rename=(' || strip(_rens) || ')'; link pl;
-        end;
-        _l = '        );'; link pl;
-        _l = '    if _n_ = 1 then do;'; link pl;
-        _l = '        declare hash _wif_h(dataset:"' || strip(source)
-             || '(keep=' || strip(_klist) || ' ' || strip(_keeps);
-        if lengthn(_rens) > 0 then
-            _l = strip(_l) || ' rename=(' || strip(_rens) || ')';
-        _l = strip(_l) || ')", duplicate:' || "'e');"; link pl;
-        _l = '        _wif_h.definekey(' || strip(_qk) || ');'; link pl;
-        _l = '        _wif_h.definedata(' || strip(_qd) || ');'; link pl;
-        _l = '        _wif_h.definedone();'; link pl;
-        _l = '    end;'; link pl;
-        _l = '    retain _wif_naff 0;'; link pl;
-        _l = "    set &from end=_wif_eof;"; link pl;
-        /* mapped-NEW columns are hash host vars, hence auto-retained:
-           without this reset an unmatched row would carry the PREVIOUS
-           matched row's values instead of missing                    */
-        if lengthn(_expn) > 0 then do;
-            _l = '    call missing(of ' || strip(_expn) || ');'; link pl;
-        end;
-        if has_where = 1 then do;
-            _l = '    if (' || strip(where_clause) || ') then do;'; link pl;
-        end;
-        _l = '    _wif_rc = _wif_h.find();'; link pl;
-        _l = '    if _wif_rc = 0 then do;'; link pl;
-        if lengthn(_atxt) > 0 then do;
-            _l = '        ' || strip(_atxt); link pl;
-        end;
-        _l = '        _wif_naff + 1;'; link pl;
-        _l = '    end;'; link pl;
-        if has_where = 1 then do;
-            _l = '    end;'; link pl;
-        end;
-        _l = "    if _wif_eof then call symputx('WIF_AFF', _wif_naff, 'G');"; link pl;
-        _l = 'run;'; link pl;
+        _jto = "&to";
+        _jfrom0 = ' ';
+        _jhash0 = ' ';
+        _jcnt = 1;
+        _jdsopt = _dsopt;
+        link jemit;
     end;
 
     else if verb = 'FILTER' then do;
@@ -1483,25 +1611,42 @@ data _null_;
     else if verb = 'APPEND' then do;
         _l = _pc || 'put NOTE: [WIF] APPEND seq ' || strip(put(seq, best8.-l))
              || " on &to from " || strip(source) || ';'; link pl;
-        _l = 'data work._wif_app;'; link pl;
-        _l = '    set ' || strip(source) || ';'; link pl;
         if has_where = 1 then do;
+            /* the copy exists so the WHERE can reference source
+               columns that the keep= would drop                     */
+            _l = 'data work._wif_app;'; link pl;
+            _l = '    set ' || strip(source) || ';'; link pl;
             _l = '    where (' || strip(where_clause) || ');'; link pl;
-        end;
-        _l = 'run;'; link pl;
-        if lengthn(_dsopt) > 0 then _l = "data &to(" || strip(_dsopt) || ');';
-        else _l = "data &to;";
-        link pl;
-        _l = "    set &from"; link pl;
-        _dsopt = catx(' ', _keeps, _rens);
-        if lengthn(_dsopt) > 0 then do;
-            _l = '        work._wif_app(' || strip(_dsopt) || ');'; link pl;
+            _l = 'run;'; link pl;
+            if lengthn(_dsopt) > 0 then _l = "data &to(" || strip(_dsopt) || ');';
+            else _l = "data &to;";
+            link pl;
+            _l = "    set &from"; link pl;
+            _dsopt = catx(' ', _keeps, _rens);
+            if lengthn(_dsopt) > 0 then do;
+                _l = '        work._wif_app(' || strip(_dsopt) || ');'; link pl;
+            end;
+            else do;
+                _l = '        work._wif_app;'; link pl;
+            end;
+            _l = 'run;'; link pl;
+            _l = 'proc datasets lib=work nolist nowarn; delete _wif_app; quit;'; link pl;
         end;
         else do;
-            _l = '        work._wif_app;'; link pl;
+            /* no WHERE: append straight from the source - one pass  */
+            if lengthn(_dsopt) > 0 then _l = "data &to(" || strip(_dsopt) || ');';
+            else _l = "data &to;";
+            link pl;
+            _l = "    set &from"; link pl;
+            _dsopt = catx(' ', _keeps, _rens);
+            if lengthn(_dsopt) > 0 then do;
+                _l = '        ' || strip(source) || '(' || strip(_dsopt) || ');'; link pl;
+            end;
+            else do;
+                _l = '        ' || strip(source) || ';'; link pl;
+            end;
+            _l = 'run;'; link pl;
         end;
-        _l = 'run;'; link pl;
-        _l = 'proc datasets lib=work nolist nowarn; delete _wif_app; quit;'; link pl;
     end;
 
     else if verb = 'REPLACE' then do;
@@ -1521,6 +1666,63 @@ data _null_;
             _l = '    keep ' || strip(_cols) || ';'; link pl;
         end;
         _l = 'run;'; link pl;
+    end;
+
+    else if verb = 'ASSERT' then do;
+        /* never modifies: counts rows FAILING the invariant and keeps
+           a capped sample in work.wif_viol for inspection            */
+        _l = _pc || 'put NOTE: [WIF] ASSERT seq ' || strip(put(seq, best8.-l))
+             || " on &to;"; link pl;
+        _l = 'data work.wif_viol(drop=_wif_naff);'; link pl;
+        _l = '    retain _wif_naff 0;'; link pl;
+        _l = "    set &from end=_wif_eof;"; link pl;
+        _l = '    where not (' || strip(where_clause) || ');'; link pl;
+        _l = '    _wif_naff + 1;'; link pl;
+        _l = '    if _wif_naff <= 200 then output;'; link pl;
+        _l = "    if _wif_eof then call symputx('WIF_AFF', _wif_naff, 'G');"; link pl;
+        _l = 'run;'; link pl;
+    end;
+
+    else if verb = 'SAVE' then do;
+        /* snapshot the hooked table; the destination came through the
+           scanner, so parameters like the scenario name are resolved */
+        _l = _pc || 'put NOTE: [WIF] SAVE seq ' || strip(put(seq, best8.-l))
+             || ": &to -> " || strip(source) || ';'; link pl;
+        _l = 'data ' || strip(source) || ';'; link pl;
+        _l = "    set &from;"; link pl;
+        _l = 'run;'; link pl;
+    end;
+
+    else if verb = 'SORT' then do;
+        _l = _pc || 'put NOTE: [WIF] SORT seq ' || strip(put(seq, best8.-l))
+             || " on &to by " || strip(compbl(keys)) || ';'; link pl;
+        if "&compress" = '1' then _l = "proc sort data=&from out=&to(compress=binary);";
+        else _l = "proc sort data=&from out=&to;";
+        link pl;
+        _l = '    by ' || strip(compbl(keys)) || ';'; link pl;
+        _l = 'run;'; link pl;
+    end;
+
+    else if verb = 'DEDUPE' then do;
+        _l = _pc || 'put NOTE: [WIF] DEDUPE seq ' || strip(put(seq, best8.-l))
+             || " on &to by " || strip(compbl(keys)) || ';'; link pl;
+        _l = "proc sort data=&from out=work._wif_dd;"; link pl;
+        _l = '    by ' || strip(compbl(keys)) || ';'; link pl;
+        _l = 'run;'; link pl;
+        _ddso = ' ';
+        if "&compress" = '1' then _ddso = 'compress=binary';
+        _ddso = catx(' ', _ddso, 'sortedby=' || strip(compbl(keys)));
+        if lengthn(_lbl) > 0 then
+            _ddso = catx(' ', _ddso, "label='" || tranwrd(strip(_lbl), "'", "''") || "'");
+        _l = "data &to(" || strip(_ddso) || ');'; link pl;
+        _l = '    set work._wif_dd;'; link pl;
+        _l = '    by ' || strip(compbl(keys)) || ';'; link pl;
+        _w2 = upcase(scan(compbl(keys), countw(compbl(keys), ' '), ' '));
+        if opt_last = 1 then _l = '    if last.' || strip(_w2) || ';';
+        else _l = '    if first.' || strip(_w2) || ';';
+        link pl;
+        _l = 'run;'; link pl;
+        _l = 'proc datasets lib=work nolist nowarn; delete _wif_dd; quit;'; link pl;
     end;
 
     else if verb = 'CODE' then do;
@@ -1543,24 +1745,155 @@ data _null_;
     else put _l $varying32767. _ll;
   return;
 
-  jprep: /* JOIN: keys exist both sides with matching types; build
-            keep / rename / definekey / definedata lists; hash size  */
-    _klist = compbl(keys);
+  kprep: /* SORT / DEDUPE: keys exist in the target; DESCENDING rules */
+    do _kk = 1 to countw(compbl(keys), ' ');
+        _w2 = upcase(scan(compbl(keys), _kk, ' '));
+        if _w2 = 'DESCENDING' then do;
+            if verb = 'DEDUPE' then do;
+                _perr = 1;
+                _pmsg = 'DEDUPE keys take plain names - order rows first with a SORT rule, then DEDUPE.';
+                return;
+            end;
+            if _kk = countw(compbl(keys), ' ') then do;
+                _perr = 1;
+                _pmsg = 'DESCENDING must be followed by a key variable name.';
+                return;
+            end;
+        end;
+        else if varnum(_fid, _w2) = 0 then do;
+            _perr = 1;
+            _pmsg = catx(' ', 'Key variable', _w2, 'not found in', "&from", '.');
+            return;
+        end;
+    end;
+  return;
+
+  vprep: /* SAVE: the destination libref must be assigned            */
+    if countc(source, '.') = 1 then do;
+        _w2 = upcase(strip(scan(source, 1, '.')));
+        if _w2 ne 'WORK' then do;
+            if libref(strip(_w2)) ne 0 then do;
+                _perr = 1;
+                _pmsg = catx(' ', 'SAVE destination libref', _w2,
+                             'is not assigned - assign it before wif_init or save to WORK.');
+                return;
+            end;
+        end;
+    end;
+  return;
+
+  jemit: /* JOIN emission, shared by MAIN (_jcnt=1, real target) and
+            PF (_jcnt=0, obs=0 both sides into work._wif_pf) so the
+            two can never drift apart                                */
+    if _jcnt = 1 then do;
+        _l = 'data ' || strip(_jto) || '(' || strip(_jdsopt)
+             || ' drop=_wif_rc _wif_naff'
+             || ifc(opt_nomatch = 'DELETE', ' _wif_del', '')
+             || ');'; link pl;
+    end;
+    else do;
+        _l = 'data ' || strip(_jto) || '(drop=_wif_rc);'; link pl;
+    end;
+    _l = "    if 0 then set &from;"; link pl;
+    _l = '    if 0 then set ' || strip(source) || '(keep=' || strip(_kkeep)
+         || ' ' || strip(_keeps); link pl;
+    if lengthn(_rens) > 0 then do;
+        _l = '        rename=(' || strip(_rens) || ')'; link pl;
+    end;
+    _l = '        );'; link pl;
+    _l = '    if _n_ = 1 then do;'; link pl;
+    _l = '        declare hash _wif_h(dataset:"' || strip(source)
+         || '(' || strip(_jhash0) || ' keep=' || strip(_kkeep) || ' ' || strip(_keeps);
+    if lengthn(_rens) > 0 then
+        _l = strip(_l) || ' rename=(' || strip(_rens) || ')';
+    _l = strip(_l) || ')", duplicate:' || "'e');"; link pl;
+    _l = '        _wif_h.definekey(' || strip(_qk) || ');'; link pl;
+    _l = '        _wif_h.definedata(' || strip(_qd) || ');'; link pl;
+    _l = '        _wif_h.definedone();'; link pl;
+    _l = '    end;'; link pl;
+    if _jcnt = 1 then do;
+        _l = '    retain _wif_naff 0;'; link pl;
+    end;
+    _l = "    set &from" || strip(_jfrom0) || ' end=_wif_eof;'; link pl;
+    if _jcnt = 1 then do;
+        if opt_nomatch = 'DELETE' then do;
+            _l = '    _wif_del = 0;'; link pl;
+        end;
+    end;
+    /* mapped-NEW columns are hash host vars, hence auto-retained:
+       without this reset an unmatched row would carry the PREVIOUS
+       matched row's values instead of missing                        */
+    if lengthn(_expn) > 0 then do;
+        _l = '    call missing(of ' || strip(_expn) || ');'; link pl;
+    end;
+    if has_where = 1 then do;
+        _l = '    if (' || strip(where_clause) || ') then do;'; link pl;
+    end;
+    _l = '    _wif_rc = _wif_h.find();'; link pl;
+    _l = '    if _wif_rc = 0 then do;'; link pl;
+    if lengthn(_atxt) > 0 then do;
+        _l = '        ' || strip(_atxt); link pl;
+    end;
+    if _jcnt = 1 then do;
+        _l = '        _wif_naff + 1;'; link pl;
+    end;
+    _l = '    end;'; link pl;
+    if _jcnt = 1 then do;
+        if opt_nomatch = 'FAIL' then do;
+            /* fail FAST with the key values in the ERROR line; abort
+               kills the step, so the same-name rewrite never replaces
+               the target (rollback discipline)                       */
+            _l = '    if _wif_rc ne 0 then do;'; link pl;
+            _l = "        put 'ERROR: [WIF] JOIN NOMATCH=FAIL - no source match for ' "
+                 || strip(_kput) || ' _n_=;'; link pl;
+            _l = '        abort;'; link pl;
+            _l = '    end;'; link pl;
+        end;
+        else if opt_nomatch = 'DELETE' then do;
+            _l = '    if _wif_rc ne 0 then _wif_del = 1;'; link pl;
+        end;
+    end;
+    if has_where = 1 then do;
+        _l = '    end;'; link pl;
+    end;
+    if _jcnt = 1 then do;
+        _l = "    if _wif_eof then call symputx('WIF_AFF', _wif_naff, 'G');"; link pl;
+        if opt_nomatch = 'DELETE' then do;
+            /* delete AFTER the end-of-step symputx, or the count is
+               lost when the last row is deleted                      */
+            _l = '    if _wif_del then delete;'; link pl;
+        end;
+    end;
+    _l = 'run;'; link pl;
+  return;
+
+  jprep: /* JOIN: keys exist both sides with matching types (renames
+            allowed: srckey=targetkey); build keep / rename /
+            definekey / definedata lists; hash size guard            */
     _qk = ' '; _qd = ' '; _keeps = ' '; _rens = ' ';
     _msrc = ' '; _mtgt = ' '; _expn = ' ';
-    do _kk = 1 to countw(_klist, ' ');
-        _w2 = upcase(scan(_klist, _kk, ' '));
-        _tv = varnum(_fid, _w2);
-        _sv = varnum(_sid, _w2);
+    _klist = ' '; _kkeep = ' '; _kput = ' ';
+    do _kk = 1 to countw(compbl(keys), ' ');
+        _tok = scan(compbl(keys), _kk, ' ');
+        _s1 = upcase(strip(scan(_tok, 1, '=')));
+        if countc(_tok, '=') = 1 then _t1 = upcase(strip(scan(_tok, 2, '=')));
+        else _t1 = _s1;
+        _tv = varnum(_fid, _t1);      /* target side uses the TARGET name */
+        _sv = varnum(_sid, _s1);      /* source side uses the SOURCE name */
         if _tv = 0 or _sv = 0 then do;
             _perr = 1;
-            _pmsg = catx(' ', 'JOIN key', _w2, 'must exist in both', "&from", 'and', source, '.');
+            _pmsg = catx(' ', 'JOIN key', _tok, '- needs', _t1, 'in', "&from",
+                         'and', _s1, 'in', source, '.');
         end;
         else if vartype(_fid, _tv) ne vartype(_sid, _sv) then do;
             _perr = 1;
-            _pmsg = catx(' ', 'JOIN key', _w2, 'is character on one side and numeric on the other.');
+            _pmsg = catx(' ', 'JOIN key', _tok, 'is character on one side and numeric on the other.');
         end;
-        _qk = catx(',', _qk, "'" || strip(_w2) || "'");
+        _klist = catx(' ', _klist, _t1);
+        _kkeep = catx(' ', _kkeep, _s1);
+        _kput  = catx(' ', _kput, strip(_t1) || '=');
+        if _s1 ne _t1 then _rens = catx(' ', _rens, strip(_s1) || '=' || strip(_t1));
+        _qk = catx(',', _qk, "'" || strip(_t1) || "'");
     end;
     if _perr = 1 then return;
     if has_cols = 1 then do;
@@ -1576,7 +1909,7 @@ data _null_;
                              'not found in source', source, '.');
                 return;
             end;
-            if indexw(_klist, _s1) > 0 and _s1 ne _t1 then do;
+            if indexw(_kkeep, _s1) > 0 and _s1 ne _t1 then do;
                 _perr = 1;
                 _pmsg = catx(' ', 'JOIN cannot rename key variable', _s1,
                              'in the columns mapping - keys are matched, not copied.');
@@ -1605,7 +1938,7 @@ data _null_;
            the target                                                */
         do _sv = 1 to attrn(_sid, 'nvars');
             _w2 = upcase(varname(_sid, _sv));
-            if indexw(_klist, _w2) = 0 then do;
+            if indexw(_kkeep, _w2) = 0 then do;
                 if varnum(_fid, _w2) > 0 then do;
                     _keeps = catx(' ', _keeps, _w2);
                     _qd = catx(',', _qd, "'" || strip(_w2) || "'");
@@ -1653,9 +1986,12 @@ data _null_;
             return;
         end;
         if varnum(_fid, _t1) = 0 then do;
-            _perr = 1;
-            _pmsg = catx(' ', 'APPEND maps to', _t1, 'which is not a column of', "&from", '.');
-            return;
+            if opt_newcols = 0 then do;
+                _perr = 1;
+                _pmsg = catx(' ', 'APPEND maps to', _t1, 'which is not a column of', "&from",
+                             '- add the NEWCOLS option if the new column is intentional.');
+                return;
+            end;
         end;
         _keeps = catx(' ', _keeps, _s1);
         _msrc  = catx(' ', _msrc, _s1);
@@ -1876,30 +2212,31 @@ quit;
 %_wif_snapcols(ds=&from, mvar=_snap)
 %let WIF_AFF = 0;
 
-/* ---- SET preflight: obs=0 sandbox catches typos BEFORE any data
-        is touched ---- */
-%if &_verb = SET %then %do;
+/* ---- preflight (SET and JOIN): obs=0 sandbox catches typos BEFORE
+        any data is touched - a rewrite of a multi-GB table is the
+        most expensive place to discover a misspelled column ---- */
+%if &_verb = SET or &_verb = JOIN %then %do;
     %let _pfile = &WIF_GENDIR/w&WIF_GEN._i&WIF_ITER._f&WIF_FIRE._r&_seq._pf.sas;
     %_wif_gen_rule(rulei=&rulei, gfile=&_pfile, from=&from, to=&to, mode=PF)
     %if &WIF_PREPERR = 1 %then %do;
+        %put ERROR: [WIF] rule seq &_seq (&_verb) failed its pre-checks: %superq(WIF_MSG);
         %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-        %put ERROR: [WIF] rule seq &_seq preflight generation failed.;
         %let _failed = 1;
         %goto fin;
     %end;
     %_wif_exec_gen(file=&_pfile)
     %if &syscc > 4 %then %do;
-        %let WIF_MSG = Assignments failed to compile or run (see the preflight step in the log above). The table was NOT touched.;
+        %let WIF_MSG = Rule text failed to compile or run in the preflight (see the log above). The table was NOT touched. Last error: %superq(syserrortext);
+        %put ERROR: [WIF] rule seq &_seq (&_verb) failed preflight - &to untouched. %superq(WIF_MSG);
         %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-        %put ERROR: [WIF] rule seq &_seq (SET) failed preflight - &to untouched.;
         %let _failed = 1;
         %goto fin;
     %end;
-    %_wif_coldiff(snap=&_snap, ds=work._wif_pf, allownew=&_newc)
+    %_wif_coldiff(snap=&_snap, ds=work._wif_pf, allownew=&_newc, expnew=&WIF_EXPNEW)
     proc datasets lib=work nolist nowarn; delete _wif_pf; quit;
     %if &WIF_CDRC = 1 %then %do;
+        %put ERROR: [WIF] rule seq &_seq (&_verb) rejected by preflight - &to untouched. %superq(WIF_MSG);
         %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-        %put ERROR: [WIF] rule seq &_seq (SET) rejected by preflight - &to untouched.;
         %let _failed = 1;
         %goto fin;
     %end;
@@ -1909,16 +2246,16 @@ quit;
 %let _gf = &WIF_GENDIR/w&WIF_GEN._i&WIF_ITER._f&WIF_FIRE._r&_seq..sas;
 %_wif_gen_rule(rulei=&rulei, gfile=&_gf, from=&from, to=&to, mode=MAIN, compress=&compress)
 %if &WIF_PREPERR = 1 %then %do;
+    %put ERROR: [WIF] rule seq &_seq (&_verb) on &to failed its pre-checks - nothing modified. %superq(WIF_MSG);
     %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-    %put ERROR: [WIF] rule seq &_seq (&_verb) on &to failed its pre-checks. Nothing modified.;
     %let _failed = 1;
     %goto fin;
 %end;
 %_wif_exec_gen(file=&_gf)
 %if &syscc > 4 %then %do;
-    %let WIF_MSG = Rule step failed (see log above). A same-name rewrite only replaces the table at successful completion, so &to kept its previous contents. If an EG data grid has it open, close the grid.;
+    %let WIF_MSG = Rule step failed. A same-name rewrite only replaces the table at successful completion, so &to kept its previous contents. If an EG data grid has it open, close the grid. Last error: %superq(syserrortext);
+    %put ERROR: [WIF] rule seq &_seq (&_verb) on &to FAILED - previous contents preserved. %superq(WIF_MSG);
     %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-    %put ERROR: [WIF] rule seq &_seq (&_verb) on &to FAILED - previous contents preserved.;
     %let _failed = 1;
     %goto fin;
 %end;
@@ -1928,25 +2265,48 @@ quit;
     %_wif_coldiff(snap=&_snap, ds=&to, allownew=&_newc, expnew=&WIF_EXPNEW)
     %if &WIF_CDRC = 1 %then %do;
         %let WIF_MSG = %superq(WIF_MSG) NOTE: the JOIN itself ran, so &to WAS modified - fix the rule and re-run from a clean state.;
+        %put ERROR: [WIF] rule seq &_seq (JOIN) created unexpected columns on &to (typo in the assign cell?). %superq(WIF_MSG);
         %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
-        %put ERROR: [WIF] rule seq &_seq (JOIN) created unexpected columns on &to (typo in the assign cell?).;
         %let _failed = 1;
         %goto fin;
     %end;
 %end;
-%_wif_nobs(ds=&to, mvar=WIF_NA)
+%if &_verb = CODE %then %do;
+    %if not %sysfunc(exist(&to, DATA)) %then %do;
+        %let WIF_MSG = CODE rule removed or renamed &to - the hooked table must still exist after the rule.;
+        %put ERROR: [WIF] rule seq &_seq (CODE): %superq(WIF_MSG);
+        %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to)
+        %let _failed = 1;
+        %goto fin;
+    %end;
+%end;
+%if &_verb = ASSERT %then %let WIF_NA = &WIF_NB;
+%else %do;
+    %_wif_nobs(ds=&to, mvar=WIF_NA)
+%end;
 %let _aff = .;
-%if &_verb = SET or &_verb = JOIN %then %let _aff = &WIF_AFF;
-%else %if &_verb = FILTER %then %let _aff = %eval(&WIF_NB - &WIF_NA);
+%if &_verb = SET or &_verb = JOIN or &_verb = ASSERT %then %let _aff = &WIF_AFF;
+%else %if &_verb = FILTER or &_verb = DEDUPE %then %let _aff = %eval(&WIF_NB - &WIF_NA);
 %else %if &_verb = APPEND %then %let _aff = %eval(&WIF_NA - &WIF_NB);
 %else %if &_verb = REPLACE %then %let _aff = &WIF_NA;
-%if &_verb = SET or &_verb = JOIN or &_verb = FILTER or &_verb = APPEND %then %do;
+%else %if &_verb = SAVE %then %let _aff = &WIF_NB;
+%if &_verb = ASSERT %then %if &_aff > 0 %then %do;
+    %let WIF_MSG = &_aff row(s) violate the assertion - sample (first 200) kept in work.wif_viol. The table itself was NOT modified.;
+    %put ERROR: [WIF] ASSERT seq &_seq on &to FAILED: %superq(WIF_MSG);
+    %_wif_log(status=FAILED, hook=&hook, seq=&_seq, verb=&_verb, target=&to,
+              nb=&WIF_NB, na=&WIF_NA, aff=&_aff)
+    %let _failed = 1;
+    %goto fin;
+%end;
+%if &_verb = SET or &_verb = JOIN or &_verb = FILTER or &_verb = APPEND
+    or &_verb = DEDUPE or &_verb = SAVE %then %do;
     %if &_aff = 0 and &_nowarn0 = 0 %then
         %put WARNING: [WIF] rule seq &_seq (&_verb) on &to affected 0 rows. Check the where clause / keys (values, case). NOWARN0 silences this.;
 %end;
-%if &WIF_HADIDX = 1 %then
+%if &WIF_HADIDX = 1 %then %if &_verb ne ASSERT %then %if &_verb ne SAVE %then
     %put WARNING: [WIF] &to had indexes%str(;) the rewrite removed them. Recreate with PROC DATASETS / INDEX CREATE if downstream code needs them.;
 %let WIF_MSG = ;
+%if &_verb = SAVE %then %let WIF_MSG = saved to &_src;
 %_wif_log(status=OK, hook=&hook, seq=&_seq, verb=&_verb, target=&to,
           nb=&WIF_NB, na=&WIF_NA, aff=&_aff)
 %put NOTE: [WIF] rule seq &_seq (&_verb) on &to: rows &WIF_NB -> &WIF_NA, affected=&_aff..;
@@ -1976,13 +2336,13 @@ quit;
 %macro _wif_fire(table=, at=);
 %local _lib _mem _ok _hk _tgt _n _i _r_tgt _r_allow _tlib _tmem _tok _nskip _bail;
 %if not %sysfunc(exist(work._wif_rules)) %then %do;
-    %put WARNING: [WIF] Hooks are active but work._wif_rules is gone (WORK cleaned mid-session?). Deactivating.;
+    %put WARNING: [WIF] Hooks are active but work._wif_rules is gone (WORK cleaned mid-session?). Deactivating - run wif_init again to reactivate.;
     %let WIF_ACTIVE = 0;
     %return;
 %end;
 %_wif_resolve(name=&table, libvar=_lib, memvar=_mem, okvar=_ok)
 %if &_ok = 0 %then %do;
-    %put ERROR: [WIF] bad table reference in hook call: %superq(table);
+    %put ERROR: [WIF] bad table reference in hook call: %superq(table) - use a plain table name or libref.table.;
     %return;
 %end;
 %if %length(&at) > 0 %then %let _hk = %qupcase(&at);
@@ -2001,7 +2361,7 @@ quit;
 %if &syscc > 4 %then %do;
     %let WIF_MSG = Session in error state on hook entry (syscc=&syscc). Nothing modified.;
     %_wif_log(status=SKIP_SYSCC, hook=&_hk, target=&_tgt)
-    %put WARNING: [WIF] hook &_hk skipped: session already in error state (syscc=&syscc).;
+    %put WARNING: [WIF] hook &_hk skipped: the session was ALREADY in error state (syscc=&syscc) BEFORE the hook - the failure is upstream in your program. Find the first ERROR above it, fix that, resubmit. wif_reset clears a stuck state.;
     %if &WIF_ONFAIL = STOP %then %do;
         %let WIF_RC = 2;
         %put ERROR: [WIF] onfail=STOP: cancelling the submitted program.;
@@ -2059,7 +2419,7 @@ run;
     data work._wif_skiplog;
         length gen 8 scenario $32 iter 8 fire 8 hook $32 seq 8 verb $8
                target $41 status $12 rows_before 8 rows_after 8
-               rows_affected 8 message $300 logged_at 8;
+               rows_affected 8 message $500 logged_at 8;
         format logged_at datetime20.;
         set work._wif_skip;
         gen = &WIF_GEN; scenario = "&WIF_SCENARIO"; iter = &WIF_ITER;
@@ -2125,6 +2485,29 @@ run;
                              hook=&_hk, compress=0)
             %if &WIF_APRC = 1 %then %do;
                 %put WARNING: [WIF] remaining rules on hook &_hk skipped after the failure (onfail=CONTINUE).;
+                /* record what never ran - wif_check counts SKIP_FAIL */
+                %if &_i < &_n %then %do;
+                    data work._wif_skiplog;
+                        length gen 8 scenario $32 iter 8 fire 8 hook $32 seq 8
+                               verb $8 target $41 status $12 rows_before 8
+                               rows_after 8 rows_affected 8 message $500
+                               logged_at 8;
+                        format logged_at datetime20.;
+                        set work._wif_todo;
+                        where rule_i > &_i;
+                        gen = &WIF_GEN; scenario = "&WIF_SCENARIO";
+                        iter = &WIF_ITER; fire = &WIF_FIRE;
+                        status = 'SKIP_FAIL';
+                        rows_before = .; rows_after = .; rows_affected = .;
+                        message = 'skipped: an earlier rule on this hook failed';
+                        logged_at = datetime();
+                        keep gen scenario iter fire hook seq verb target status
+                             rows_before rows_after rows_affected message
+                             logged_at;
+                    run;
+                    proc append base=work.wif_log data=work._wif_skiplog force; run;
+                    proc datasets lib=work nolist nowarn; delete _wif_skiplog; quit;
+                %end;
                 %let _bail = 1;
             %end;
         %end;
@@ -2180,7 +2563,7 @@ quit;
     %end;
     %let _b = %_wif_path(&base);
     %if not %sysfunc(fileexist(&_b)) %then %do;
-        %put ERROR: [WIF] base folder not found: &_b;
+        %put ERROR: [WIF] base folder not found: &_b (as the SAS SERVER sees paths - not your PC).;
         %let WIF_RC = 1;
         %return;
     %end;
@@ -2315,7 +2698,7 @@ quit;
         %let _prev = &_lib..&_mem;
         %if &_first = 1 and &_verb = CODE %then %do;
             /* CODE cannot fuse the base->staging copy; pre-copy     */
-            data _WIFI.&_mem(compress=yes);
+            data _WIFI.&_mem(compress=binary);
                 set &_fromlib..&_mem;
             run;
             %if &syscc > 4 %then %do;
@@ -2548,6 +2931,63 @@ run;
 %_wif_opts_restore()
 %mend wif_off;
 
+/* End-of-run gate for batch drivers: ERROR (or ABORT) if anything
+   FAILED, went missing, or was skipped by a failure. strict=Y also
+   flags OK rules that affected 0 rows (the silent-typo class).      */
+%macro wif_check(scope=GEN, onbad=ERROR, strict=N);
+%local _bad _warn0 _w;
+%if not %sysfunc(exist(work.wif_log)) %then %do;
+    %put NOTE: [WIF] wif_check: no wif_log in this session - nothing to check.;
+    %return;
+%end;
+%let _w = %upcase(&scope);
+%if &_w ne GEN and &_w ne SESSION %then %let _w = GEN;
+%let _bad = 0;
+%let _warn0 = 0;
+proc sql noprint;
+    select coalesce(sum(status in ('FAILED', 'NO_TABLE', 'SKIP_SYSCC', 'SKIP_FAIL')), 0)
+        into :_bad trimmed
+        from work.wif_log
+        %if &_w = GEN %then where gen = &WIF_GEN;
+        ;
+quit;
+%if %upcase(&strict) = Y %then %do;
+    proc sql noprint;
+        select coalesce(sum(status = 'OK' and rows_affected = 0
+                            and verb in ('SET', 'JOIN', 'FILTER', 'APPEND')), 0)
+            into :_warn0 trimmed
+            from work.wif_log
+            %if &_w = GEN %then where gen = &WIF_GEN;
+            ;
+    quit;
+%end;
+%if %eval(&_bad + &_warn0) = 0 %then %do;
+    %put NOTE: [WIF] wif_check: clean (scope=&_w, strict=%upcase(&strict)).;
+    %return;
+%end;
+title '[WIF] wif_check findings';
+proc print data=work.wif_log noobs width=min;
+    where (status in ('FAILED', 'NO_TABLE', 'SKIP_SYSCC', 'SKIP_FAIL')
+      %if %upcase(&strict) = Y %then %do;
+           or (status = 'OK' and rows_affected = 0
+               and verb in ('SET', 'JOIN', 'FILTER', 'APPEND'))
+      %end;
+          )
+      %if &_w = GEN %then and gen = &WIF_GEN;
+      ;
+    var gen scenario iter hook seq verb target status rows_affected message;
+run;
+title;
+%let WIF_RC = 1;
+%if %upcase(&strict) = Y %then
+    %put ERROR: [WIF] wif_check: &_bad problem row(s) and &_warn0 zero-affected OK row(s) (scope=&_w) - see the findings above before trusting these outputs.;
+%else
+    %put ERROR: [WIF] wif_check: &_bad problem row(s) (scope=&_w) - see the findings above before trusting these outputs.;
+%if %upcase(&onbad) = ABORT %then %do;
+    %abort cancel;
+%end;
+%mend wif_check;
+
 /* Print the run log + a compact summary.                            */
 %macro wif_report();
 %if not %sysfunc(exist(work.wif_log)) %then %do;
@@ -2591,33 +3031,53 @@ run;
 %else %put NOTE: [WIF] rules lint clean for scenario %upcase(&scenario) (&WIF_LOADN rule(s)).;
 %mend wif_lint;
 
-/* Convenience: init -> %include the program -> save outputs -> off. */
-%macro wif_run(scenario=, main=, rules=, iter=1, params=, keep=,
+/* Convenience: init -> run the program (main= file or code= compiled
+   macro) -> save outputs -> off.                                     */
+%macro wif_run(scenario=, main=, code=, rules=, iter=1, params=, keep=,
                outlib=work, onfail=STOP, inlib=, base=);
 %local _m _i _w;
 %if %length(%superq(rules)) = 0 %then %let rules = %superq(WIF_RULES_SRC);
 %wif_init(scenario=&scenario, rules=%superq(rules), iter=&iter,
           params=%superq(params), onfail=&onfail, inlib=&inlib, base=&base)
 %if &WIF_RC ne 0 %then %do;
-    %put ERROR: [WIF] wif_run(&scenario) aborted: init failed.;
+    %put ERROR: [WIF] wif_run(&scenario) aborted: init failed - see the lint findings / ERROR lines printed above.;
     %return;
 %end;
-%let _m = %_wif_path(&main);
-%if %length(&_m) = 0 %then %do;
-    %put ERROR: [WIF] wif_run needs main= (path to your program).;
+%if %length(%superq(code)) > 0 %then %if %length(%superq(main)) > 0 %then %do;
+    %put ERROR: [WIF] wif_run: give main= (a program file) OR code= (a compiled macro), not both.;
     %wif_off()
     %return;
 %end;
-%if not %sysfunc(fileexist(&_m)) %then %do;
-    %put ERROR: [WIF] main program not found: &_m;
-    %wif_off()
-    %return;
+%if %length(%superq(code)) > 0 %then %do;
+    /* EG programs often have no server path: wrap the program once
+       in a macro definition, submit it, then run it by name         */
+    %if %sysmacexist(&code) = 0 %then %do;
+        %put ERROR: [WIF] wif_run: code=&code is not a compiled macro. Wrap your program in a macro definition, submit that once, then call wif_run again (see the guide - note DATALINES cannot live inside a macro).;
+        %wif_off()
+        %return;
+    %end;
+    %put NOTE: [WIF] running macro &code under scenario %upcase(&scenario)...;
+    %unquote(%nrstr(%)&code)
+    options obs=max replace nosyntaxcheck;
 %end;
-%put NOTE: [WIF] running &_m under scenario %upcase(&scenario)...;
-%include "&_m" / lrecl=32767;
-options obs=max replace nosyntaxcheck;
+%else %do;
+    %let _m = %_wif_path(&main);
+    %if %length(&_m) = 0 %then %do;
+        %put ERROR: [WIF] wif_run needs main= (a program file path) or code= (a compiled macro name).;
+        %wif_off()
+        %return;
+    %end;
+    %if not %sysfunc(fileexist(&_m)) %then %do;
+        %put ERROR: [WIF] main program not found: &_m (paths must be SAS SERVER paths, not your PC paths).;
+        %wif_off()
+        %return;
+    %end;
+    %put NOTE: [WIF] running &_m under scenario %upcase(&scenario)...;
+    %include "&_m" / lrecl=32767;
+    options obs=max replace nosyntaxcheck;
+%end;
 %if &syscc > 4 %then %do;
-    %put ERROR: [WIF] main program failed under scenario %upcase(&scenario) (syscc=&syscc) - outputs NOT saved.;
+    %put ERROR: [WIF] main program failed under scenario %upcase(&scenario) (syscc=&syscc) - outputs NOT saved. Fix the first ERROR inside the program above and resubmit%str(;) the scenario has been deactivated.;
     %wif_off()
     %if %upcase(&onfail) = STOP %then %do;
         %let WIF_RC = 2;
@@ -2641,7 +3101,7 @@ options obs=max replace nosyntaxcheck;
     %return;
 %end;
 %if not %sysfunc(exist(&_lib..&_mem)) %then %do;
-    %put ERROR: [WIF] wif_save: &_lib..&_mem not found.;
+    %put ERROR: [WIF] wif_save: &_lib..&_mem not found. Did the program create it this run? Check work.wif_log and WIF_RC.;
     %return;
 %end;
 %if %length(%superq(as)) = 0 %then %do;
@@ -2653,7 +3113,7 @@ options obs=max replace nosyntaxcheck;
     %return;
 %end;
 %if %sysfunc(libref(&lib)) ne 0 %then %do;
-    %put ERROR: [WIF] wif_save: libref &lib is not assigned.;
+    %put ERROR: [WIF] wif_save: libref &lib is not assigned - assign it first with a LIBNAME statement, or use lib=work.;
     %return;
 %end;
 data &lib..&as;
@@ -2661,6 +3121,238 @@ data &lib..&as;
 run;
 %put NOTE: [WIF] saved &_lib..&_mem as &lib..&as (%_wif_now()).;
 %mend wif_save;
+
+/* One-glance state: version, activity, rules by hook, staged librefs,
+   the last few log rows. Log-first so it photographs well.          */
+%macro wif_status();
+%local _hl _n _k _l1 _p1 _tail;
+%put NOTE: [WIF] ------------------------- status -------------------------;
+%put NOTE: [WIF] v&WIF_VERSION  ACTIVE=&WIF_ACTIVE  WIF_RC=&WIF_RC  gen=&WIF_GEN  fires=&WIF_FIRE;
+%if "&WIF_ACTIVE" = "1" %then %do;
+    %put NOTE: [WIF] scenario=&WIF_SCENARIO  iter=&WIF_ITER  onfail=&WIF_ONFAIL;
+    %put NOTE: [WIF] rules source: %superq(WIF_RULES_SRC);
+    %if %sysfunc(exist(work._wif_rules)) %then %do;
+        %let _hl = ;
+        proc sql noprint;
+            select catx(':', hook, put(count(*), best8.-l))
+                into :_hl separated by '   '
+                from work._wif_rules
+                group by hook;
+        quit;
+        %put NOTE: [WIF] rules by hook: &_hl;
+    %end;
+    %if %sysfunc(exist(work._wif_libsave)) %then %do;
+        %_wif_nobs(ds=work._wif_libsave, mvar=_n)
+        %do _k = 1 %to &_n;
+            %let _l1 = ;
+            %let _p1 = ;
+            proc sql noprint;
+                select libref, path into :_l1 trimmed, :_p1 trimmed
+                from work._wif_libsave where k = &_k;
+            quit;
+            %if %length(&_l1) > 0 %then %do;
+                %if %length(%superq(_p1)) > 0 %then
+                    %put NOTE: [WIF] staged libref &_l1 (original path: %superq(_p1));
+                %else
+                    %put NOTE: [WIF] staged libref &_l1 (was unassigned - wif_off will clear it);
+            %end;
+        %end;
+    %end;
+%end;
+%else %put NOTE: [WIF] INACTIVE - every hook expands to nothing.;
+%if %sysfunc(exist(work.wif_log)) %then %do;
+    %_wif_nobs(ds=work.wif_log, mvar=_n)
+    %let _tail = %sysfunc(max(1, %eval(&_n - 4)));
+    title '[WIF] last log rows';
+    proc print data=work.wif_log(firstobs=&_tail) noobs width=min;
+        var gen scenario iter hook seq verb target status rows_affected message;
+    run;
+    title;
+%end;
+%else %put NOTE: [WIF] no rule applications logged this session yet.;
+%put NOTE: [WIF] -----------------------------------------------------------;
+%mend wif_status;
+
+/* The panic button: whatever state a stopped or wedged run left
+   behind, make the session sane again. Keeps work.wif_log.          */
+%macro wif_reset();
+%local _k;
+%_wif_restore_libs()
+/* orphan sweep: staging librefs whose tracking dataset was lost     */
+%if %sysfunc(libref(_WIFI)) = 0 %then %do;
+    libname _WIFI clear;
+%end;
+%do _k = 1 %to 9;
+    %if %sysfunc(libref(_WIFB&_k)) = 0 %then %do;
+        libname _WIFB&_k clear;
+    %end;
+%end;
+%let WIF_ACTIVE = 0;
+%let WIF_RC = 0;
+%let WIF_MSG = ;
+proc datasets lib=work nolist nowarn;
+    delete _wif_rules _wif_lets _wif_params _wif_fired _wif_todo
+           _wif_skip _wif_sttodo _wif_lerrs _wif_pf _wif_stlibs;
+quit;
+%_wif_opts_restore()
+options obs=max replace;
+%let syscc = 0;
+%put NOTE: [WIF] reset complete - hooks inert, librefs restored/cleared, error state cleared, work.wif_log kept.;
+%mend wif_reset;
+
+/* Scenario-vs-baseline output digest: row counts, orphan keys both
+   ways, changed-row counts, and per numeric column the n / sum /
+   mean side by side with deltas (the number an actuary reads first
+   is "how much did total premium move"). Pairs with the
+   <SCENARIO>_<table> names that wif_run keep= produces.             */
+%macro wif_compare(base=, scen=, tables=, keys=, lib=work,
+                   out=work.wif_compare, print=Y);
+%local _i _t _b _s _nb _ns _oa _ob _chg _si _kk _kw _ty1 _ty2 _bad;
+%if %length(%superq(base)) = 0 or %length(%superq(scen)) = 0
+    or %length(%superq(tables)) = 0 or %length(%superq(keys)) = 0 %then %do;
+    %put ERROR: [WIF] wif_compare needs base=, scen=, tables= and keys=.;
+    %return;
+%end;
+%if %sysfunc(libref(&lib)) ne 0 %then %do;
+    %put ERROR: [WIF] wif_compare: libref &lib is not assigned.;
+    %return;
+%end;
+data &out;
+    length table $32 status $10 nobs_base nobs_scen only_base only_scen
+           changed_rows identical 8;
+    call missing(of _all_);
+    stop;
+run;
+data &out._cols;
+    length table $32 column $32 n_base n_scen mean_base mean_scen
+           sum_base sum_scen delta_sum pct_delta_sum ndif 8;
+    call missing(of _all_);
+    stop;
+run;
+%do _i = 1 %to %sysfunc(countw(&tables, %str( )));
+    %let _t = %upcase(%scan(&tables, &_i, %str( )));
+    %let _b = &lib..%upcase(&base)_&_t;
+    %let _s = &lib..%upcase(&scen)_&_t;
+    %let _bad = 0;
+    %if not %sysfunc(exist(&_b)) %then %let _bad = 1;
+    %if not %sysfunc(exist(&_s)) %then %let _bad = 1;
+    %if &_bad = 1 %then %do;
+        %put WARNING: [WIF] wif_compare: &_b or &_s not found - table &_t skipped.;
+        data work._wif_cmp1;
+            length table $32 status $10 nobs_base nobs_scen only_base
+                   only_scen changed_rows identical 8;
+            table = "&_t"; status = 'MISSING';
+            call missing(nobs_base, nobs_scen, only_base, only_scen,
+                         changed_rows, identical);
+        run;
+        proc append base=&out data=work._wif_cmp1 force; run;
+    %end;
+    %else %do;
+        /* keys must exist with matching types on both sides         */
+        %do _kk = 1 %to %sysfunc(countw(&keys, %str( )));
+            %let _kw = %scan(&keys, &_kk, %str( ));
+            %let _ty1 = ;
+            %let _ty2 = ;
+            %_wif_vartype(ds=&_b, var=&_kw, mvar=_ty1)
+            %_wif_vartype(ds=&_s, var=&_kw, mvar=_ty2)
+            %if %length(&_ty1) = 0 %then %let _bad = 1;
+            %else %if %length(&_ty2) = 0 %then %let _bad = 1;
+            %else %if &_ty1 ne &_ty2 %then %let _bad = 1;
+        %end;
+        %if &_bad = 1 %then %do;
+            %put WARNING: [WIF] wif_compare: key &_kw missing or type-mismatched on &_t - table skipped.;
+            data work._wif_cmp1;
+                length table $32 status $10 nobs_base nobs_scen only_base
+                       only_scen changed_rows identical 8;
+                table = "&_t"; status = 'BADKEYS';
+                call missing(nobs_base, nobs_scen, only_base, only_scen,
+                             changed_rows, identical);
+            run;
+            proc append base=&out data=work._wif_cmp1 force; run;
+        %end;
+        %else %do;
+            proc sort data=&_b out=work._wif_cb; by &keys; run;
+            proc sort data=&_s out=work._wif_cs; by &keys; run;
+            %_wif_nobs(ds=work._wif_cb, mvar=_nb)
+            %_wif_nobs(ds=work._wif_cs, mvar=_ns)
+            %let _oa = 0;
+            %let _ob = 0;
+            data _null_;
+                merge work._wif_cb(in=_a keep=&keys)
+                      work._wif_cs(in=_b keep=&keys) end=_e;
+                by &keys;
+                retain _woa _wob 0;
+                if _a and not _b then _woa + 1;
+                if _b and not _a then _wob + 1;
+                if _e then do;
+                    call symputx('_oa', _woa);
+                    call symputx('_ob', _wob);
+                end;
+            run;
+            proc compare base=work._wif_cb compare=work._wif_cs
+                         out=work._wif_cd outnoequal noprint
+                         outstats=work._wif_cst;
+                id &keys;
+            run;
+            %let _si = &sysinfo;
+            %let syscc = 0;
+            %let _chg = 0;
+            %_wif_nobs(ds=work._wif_cd, mvar=_chg)
+            data work._wif_cmp1;
+                length table $32 status $10 nobs_base nobs_scen only_base
+                       only_scen changed_rows identical 8;
+                table = "&_t"; status = 'OK';
+                nobs_base = &_nb; nobs_scen = &_ns;
+                only_base = &_oa; only_scen = &_ob;
+                changed_rows = &_chg;
+                identical = (&_si = 0);
+            run;
+            proc append base=&out data=work._wif_cmp1 force; run;
+            %if %sysfunc(exist(work._wif_cst)) %then %do;
+                proc sort data=work._wif_cst; by _var_; run;
+                data work._wif_cc;
+                    length table $32 column $32;
+                    merge work._wif_cst(where=(_type_='N')
+                              keep=_var_ _type_ _base_ _comp_
+                              rename=(_base_=n_base _comp_=n_scen))
+                          work._wif_cst(where=(_type_='MEAN')
+                              keep=_var_ _type_ _base_ _comp_
+                              rename=(_base_=mean_base _comp_=mean_scen))
+                          work._wif_cst(where=(_type_='NDIF')
+                              keep=_var_ _type_ _base_
+                              rename=(_base_=ndif));
+                    by _var_;
+                    table = "&_t";
+                    column = upcase(_var_);
+                    sum_base = mean_base * n_base;
+                    sum_scen = mean_scen * n_scen;
+                    delta_sum = sum(sum_scen, -sum_base);
+                    pct_delta_sum = ifn(sum_base not in (0, .),
+                                        100 * delta_sum / sum_base, .);
+                    keep table column n_base n_scen mean_base mean_scen
+                         sum_base sum_scen delta_sum pct_delta_sum ndif;
+                run;
+                proc append base=&out._cols data=work._wif_cc force; run;
+            %end;
+            proc datasets lib=work nolist nowarn;
+                delete _wif_cb _wif_cs _wif_cd _wif_cst _wif_cc;
+            quit;
+        %end;
+    %end;
+%end;
+proc datasets lib=work nolist nowarn; delete _wif_cmp1; quit;
+%if %upcase(&print) = Y %then %do;
+    title "[WIF] compare: %upcase(&base) vs %upcase(&scen) - tables";
+    proc print data=&out noobs width=min; run;
+    title "[WIF] compare: %upcase(&base) vs %upcase(&scen) - numeric columns";
+    proc print data=&out._cols noobs width=min;
+        format mean_base mean_scen sum_base sum_scen delta_sum best12.
+               pct_delta_sum 8.2;
+    run;
+    title;
+%end;
+%put NOTE: [WIF] wif_compare done: &out (tables) and &out._cols (columns).;
+%mend wif_compare;
 
 /* Sugar: append one rule to a rules dataset (default work.wif_rules)
    from open code. For anything beyond a few rules prefer datalines
