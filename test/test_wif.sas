@@ -1343,6 +1343,18 @@ data _null_;
     put 'data work.v1 / view=work.v1;';
     put '    set work.beta;';
     put 'run;';
+    put 'proc sql;';
+    put '    create table';
+    put '        work.delta as';
+    put '    select * from work.beta;';
+    put '    create table work.eps(compress=yes) as';
+    put '    select * from work.beta;';
+    put 'quit;';
+    put 'proc sql;';
+    put '    create table work.zeta as select * from work.beta;';
+    put 'data work.eta;';
+    put '    set work.beta;';
+    put 'run;';
 run;
 %wif_autohook(main=&TROOT/main/ah_fixture.sas,
               out=&TROOT/main/ah_fixture_hooked.sas)
@@ -1355,8 +1367,8 @@ proc sql noprint;
     from work.wif_autohook
     where action = 'SKIP' and index(paste, 'at=DUP2_L') > 0;
 quit;
-%assert_true(flag=%eval(&t30i = 4), id=T30a,
-    desc=autohook inserted exactly beta gamma beta_s stats [got &t30i])
+%assert_true(flag=%eval(&t30i = 7), id=T30a,
+    desc=autohook inserted beta gamma beta_s stats delta eps eta [got &t30i])
 %assert_true(flag=%eval(&t30d = 2), id=T30b,
     desc=duplicate-site table got two paste-ready at= suggestions)
 %assert_true(flag=%eval(%sysfunc(fileexist(&TROOT/main/ah_fixture_hooked.sas)) = 1),
@@ -1369,8 +1381,15 @@ run;
 proc sql noprint;
     select count(*) into :t30h trimmed from work.t30hooks;
 quit;
-%assert_true(flag=%eval(&t30h = 5), id=T30d,
-    desc=copy holds the original hook plus the 4 inserted ones [got &t30h])
+%assert_true(flag=%eval(&t30h = 8), id=T30d,
+    desc=copy holds the original hook plus the 7 inserted ones [got &t30h])
+proc sql noprint;
+    select count(*) into :t30z trimmed
+    from work.wif_autohook
+    where table = 'ZETA' and action = 'SKIP' and index(reason, 'quit') > 0;
+quit;
+%assert_true(flag=%eval(&t30z = 1), id=T30e,
+    desc=sql block without quit reported instead of silently missed)
 
 /*==================================================================
   T31  wif_compare digest

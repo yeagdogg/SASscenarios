@@ -132,6 +132,14 @@ data work._wif_ah_ev(keep=line table hook action reason paste);
     _pcw = '25'x;
     set work._wif_ah_mask end=_eof;
 
+    /* a statement continuing from the previous line needs a space at
+       the boundary, or its tokens FUSE across lines ("create table"
+       + newline + "work.x" became CREATE TABLEWORK.X and silently
+       failed every prefix match)                                     */
+    if _bl > 0 and _bl < 10000 then do;
+        _bl + 1;
+        substr(_stmt, _bl, 1) = ' ';
+    end;
     _i = 1;
     do while (_i <= ll);
         _c = char(mtext, _i);
@@ -254,8 +262,22 @@ data work._wif_ah_ev(keep=line table hook action reason paste);
         end;
         return;
     end;
-    /* a new DATA/PROC statement implicitly terminates a pending step */
+    /* a new DATA/PROC statement implicitly terminates a pending step
+       - and an open PROC SQL block. Without a quit; line there is no
+       safe insertion point, so sql pendings become report rows.      */
     if _stmt =: 'DATA ' or _stmt = 'DATA' or _stmt =: 'PROC ' then do;
+        if _insql = 1 then do;
+            do _k = 1 to _nsql;
+                if _sqlm{_k} ne ' ' then do;
+                    line = _sqll{_k}; table = _sqlm{_k}; hook = ' ';
+                    action = 'SKIP'; paste = ' ';
+                    reason = 'sql block has no explicit quit; - add quit; then hook';
+                    output;
+                end;
+            end;
+            _nsql = 0;
+            _insql = 0;
+        end;
         if _np > 0 then do;
             do _k = 1 to _np;
                 line = _pline{_k}; table = _pmem{_k}; hook = ' ';
@@ -361,7 +383,8 @@ data work._wif_ah_ev(keep=line table hook action reason paste);
     /* PROC SQL statements                                            */
     if _insql = 1 then do;
         if _stmt =: 'CREATE TABLE ' then do;
-            _nm = scan(_stmt, 3, ' ');
+            /* strip trailing dataset options: create table x(compress=yes) as ... */
+            _nm = scan(scan(_stmt, 3, ' '), 1, '(');
             link addsql;
             return;
         end;
